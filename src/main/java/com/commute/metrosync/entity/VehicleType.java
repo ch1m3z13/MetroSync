@@ -1,5 +1,9 @@
 package com.commute.metrosync.entity;
 
-public class VehicleType {
-    
+public enum VehicleType {
+    SEDAN,
+    SUV,
+    MINIBUS,
+    VAN,
+    COASTER
 }
