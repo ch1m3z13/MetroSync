@@ -43,3 +43,4 @@ build/
 # Secrets and Credentials
 src/main/resources/privateKey.pem
 .env
+mvnw
