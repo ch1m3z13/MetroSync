@@ -141,8 +141,17 @@ public class Booking extends BaseEntity {
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
     
-    // Constructors
-    public Booking() {}
+    // Reference number for booking
+    @Column(name = "reference_number", unique = true, length = 50)
+    private String referenceNumber;
+
+    // Constructors - generate reference number if not provided
+    public Booking() {
+        super();
+        if (this.referenceNumber == null) {
+            this.referenceNumber = generateReferenceNumber();
+        }
+    }
     
     public Booking(User rider, Route route, Point pickupLocation, 
                    Point dropoffLocation, LocalDateTime scheduledTime, 
@@ -153,7 +162,23 @@ public class Booking extends BaseEntity {
         this.dropoffLocation = dropoffLocation;
         this.scheduledPickupTime = scheduledTime;
         this.fareAmount = fareAmount;
+        if (this.referenceNumber == null) {
+            this.referenceNumber = generateReferenceNumber();
+        }
     }
+        // Getter and setter for referenceNumber
+        public String getReferenceNumber() {
+            return referenceNumber;
+        }
+
+        public void setReferenceNumber(String referenceNumber) {
+            this.referenceNumber = referenceNumber;
+        }
+
+        // Helper method to generate reference numbers
+        private String generateReferenceNumber() {
+            return "BK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        }
     
     // State transition methods
     public void confirm() {

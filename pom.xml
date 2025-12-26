@@ -48,6 +48,33 @@
             <artifactId>quarkus-arc</artifactId> <!-- CDI -->
         </dependency>
 
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.enterprise</groupId>
+            <artifactId>jakarta.enterprise.cdi-api</artifactId>
+            <version>4.0.1</version> <!-- Use 3.0.0 for Jakarta EE 9 -->
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Password hashing -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-elytron-security-common</artifactId>
+        </dependency>
+    
+        <!-- JWT tokens -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-jwt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-jwt-build</artifactId>
+        </dependency>
+
         <!-- Hibernate Spatial for PostGIS -->
         <dependency>
             <groupId>org.hibernate.orm</groupId>

@@ -50,16 +50,16 @@ public class BookingService {
         LOG.info(String.format("Creating booking for rider %s on route %s", 
             request.riderId(), request.routeId()));
         
-        // 1. Validate rider exists
-        User rider = userRepository.findById(request.riderId())
+        // 1. Validate rider exists - use findByIdOptional() for Optional support
+        User rider = userRepository.findByIdOptional(request.riderId())
                 .orElseThrow(() -> new IllegalArgumentException("Rider not found"));
         
         if (!rider.isRider()) {
             throw new IllegalArgumentException("User is not registered as a rider");
         }
         
-        // 2. Validate route exists and is active
-        Route route = routeRepository.findById(request.routeId())
+        // 2. Validate route exists and is active - use findByIdOptional()
+        Route route = routeRepository.findByIdOptional(request.routeId())
                 .orElseThrow(() -> new IllegalArgumentException("Route not found"));
         
         if (!route.getIsActive() || !route.getIsPublished()) {
@@ -112,14 +112,14 @@ public class BookingService {
             request.scheduledPickupTime().plusMinutes(estimatedMinutes)
         );
         
-        // 9. Save booking
-        Booking savedBooking = bookingRepository.save(booking);
+        // 9. Save booking - use persist() with Panache
+        bookingRepository.persist(booking);
         
         // 10. Notify driver (TODO: implement notification service)
         LOG.info(String.format("Booking created: %s, Fare: NGN %.2f", 
-            savedBooking.getId(), fare));
+            booking.getId(), fare));
         
-        return savedBooking;
+        return booking;
     }
     
     /**
@@ -135,12 +135,11 @@ public class BookingService {
         }
         
         booking.confirm();
-        Booking confirmed = bookingRepository.save(booking);
         
         LOG.info(String.format("Booking %s confirmed by driver %s", bookingId, driverId));
         
         // TODO: Notify rider
-        return confirmed;
+        return booking;
     }
     
     /**
@@ -156,12 +155,11 @@ public class BookingService {
         }
         
         booking.startRide();
-        Booking started = bookingRepository.save(booking);
         
         LOG.info(String.format("Ride started for booking %s", bookingId));
         
         // TODO: Notify rider
-        return started;
+        return booking;
     }
     
     /**
@@ -177,12 +175,11 @@ public class BookingService {
         }
         
         booking.complete();
-        Booking completed = bookingRepository.save(booking);
         
         LOG.info(String.format("Ride completed for booking %s", bookingId));
         
         // TODO: Request ratings from both parties
-        return completed;
+        return booking;
     }
     
     /**
@@ -205,12 +202,11 @@ public class BookingService {
         }
         
         booking.cancel(userId, reason);
-        Booking cancelled = bookingRepository.save(booking);
         
         LOG.info(String.format("Booking %s cancelled by user %s", bookingId, userId));
         
         // TODO: Notify other party and apply cancellation policy
-        return cancelled;
+        return booking;
     }
     
     /**
@@ -240,21 +236,21 @@ public class BookingService {
             booking.setRiderRating(rating);
             booking.setRiderFeedback(feedback);
             
-            // Update driver rating
-            User driver = userRepository.findById(booking.getRoute().getDriverId())
-                    .orElseThrow();
+            // Update driver rating - use findByIdOptional()
+            User driver = userRepository.findByIdOptional(booking.getRoute().getDriverId())
+                    .orElseThrow(() -> new IllegalArgumentException("Driver not found"));
             driver.updateRating(rating);
-            userRepository.save(driver);
+            // No need to explicitly save with Panache in @Transactional
         } else {
             booking.setDriverRating(rating);
             booking.setDriverFeedback(feedback);
             
             // Update rider rating
             booking.getRider().updateRating(rating);
-            userRepository.save(booking.getRider());
+            // No need to explicitly save with Panache in @Transactional
         }
         
-        return bookingRepository.save(booking);
+        return booking;
     }
     
     /**
@@ -281,7 +277,8 @@ public class BookingService {
     // ==================== Private Helper Methods ====================
     
     private Booking getBooking(UUID bookingId) {
-        return bookingRepository.findById(bookingId)
+        // Use findByIdOptional() for Optional support
+        return bookingRepository.findByIdOptional(bookingId)
                 .orElseThrow(() -> new IllegalArgumentException("Booking not found"));
     }
     

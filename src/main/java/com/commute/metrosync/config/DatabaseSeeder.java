@@ -14,13 +14,14 @@ import org.locationtech.jts.geom.Point;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.logging.Logger;
 
 /**
  * Seeds the database with sample routes, users, and bookings for Abuja on startup.
- * Only runs in DEV mode and if database is empty.
+ * Fully idempotent - can be run multiple times safely.
+ * Only runs in DEV mode.
  */
 @ApplicationScoped
 public class DatabaseSeeder {
@@ -52,33 +53,25 @@ public class DatabaseSeeder {
             return;
         }
         
-        LOG.info("🌱 Checking if database needs seeding...");
-        
-        // Check if data already exists
-        if (userRepository.existsByUsername("demo_rider")) {
-            LOG.info("✅ Database already seeded. Skipping.");
-            return;
-        }
-        
-        LOG.info("🌱 Seeding database with sample data...");
+        LOG.info("🌱 Starting database seeding process...");
         
         try {
-            // Seed users first
-            List<User> users = seedUsers();
-            User rider = users.get(0);
-            User driver1 = users.get(1);
-            User driver2 = users.get(2);
+            // Seed users (idempotent)
+            User rider = getOrCreateRider();
+            User driver1 = getOrCreateDriver1();
+            User driver2 = getOrCreateDriver2();
             
-            // Seed vehicles for drivers
-            seedVehicles(driver1, driver2);
+            // Seed vehicles (idempotent)
+            Vehicle vehicle1 = getOrCreateVehicle1(driver1);
+            Vehicle vehicle2 = getOrCreateVehicle2(driver2);
             
-            // Seed routes
-            Route route1 = seedCentralToMaitama(driver1.getId());
-            Route route2 = seedGwarinpaToWuse(driver2.getId());
-            Route route3 = seedKubowaToJabi(driver1.getId());
+            // Seed routes (idempotent)
+            Route route1 = getOrCreateCentralToMaitama(driver1.getId());
+            Route route2 = getOrCreateGwarinpaToWuse(driver2.getId());
+            Route route3 = getOrCreateKubowaToJabi(driver1.getId());
             
-            // Seed sample bookings
-            seedBookings(rider, route1, route2);
+            // Seed sample bookings (idempotent)
+            getOrCreateBookings(rider, route1, route2);
             
             LOG.info("✅ Database seeding completed successfully!");
             LOG.info("📝 Test Credentials:");
@@ -92,152 +85,235 @@ public class DatabaseSeeder {
     }
     
     /**
-     * Seed sample users
+     * Get or create demo rider
      */
-    private List<User> seedUsers() {
-        User rider = new User(
-            "demo_rider",
-            "password123",
-            "Amina Bello",
-            "amina@example.com",
-            "+2348012345678"
-        );
-        rider.setIsVerified(true);
-        rider.setIsActive(true);
-        userRepository.save(rider);
-        LOG.info("✅ Created rider: " + rider.getFullName());
+private User getOrCreateRider() {
+    // 1. Check if username OR phone number already exists to prevent constraint violations
+    Optional<User> existing = userRepository.find("username = ?1 or phoneNumber = ?2", 
+                                                 "demo_rider", "+2348012345678").firstResultOptional();
+    
+    if (existing.isPresent()) {
+        LOG.info("✓ Rider already exists (matching username or phone): " + existing.get().getFullName());
+        return existing.get();
+    }
+    
+    User rider = new User(
+        "demo_rider",
+        "password123",
+        "Amina Bello",
+        "amina@example.com",
+        "+2348012345678"
+    );
+    rider.setIsVerified(true);
+    rider.setIsActive(true);
+    
+    // 2. Use persist() instead of persistAndFlush()
+    // Let the @Transactional boundary handle the flush.
+    userRepository.persist(rider); 
+    
+    LOG.info("✅ Created rider: " + rider.getFullName());
+    return rider;
+}
+    
+    /**
+     * Get or create demo driver 1
+     */
+private User getOrCreateDriver1() {
+    Optional<User> existing = userRepository.find("username = ?1 or phoneNumber = ?2", 
+                                                 "demo_driver1", "+23480876574321").firstResultOptional();
+    if (existing.isPresent()) {
+        LOG.info("✓ Driver 1 already exists: " + existing.get().getFullName());
+        return existing.get();
+    }
         
-        User driver1 = new User(
+        User driver = new User(
             "demo_driver1",
             "password123",
             "Emeka Okafor",
             "emeka@example.com",
-            "+2348087654321"
+            "+23480876574321"
         );
-        driver1.addRole(UserRole.DRIVER);
-        driver1.setIsVerified(true);
-        driver1.setIsActive(true);
-        userRepository.save(driver1);
-        LOG.info("✅ Created driver: " + driver1.getFullName());
-        
-        User driver2 = new User(
-            "demo_driver2",
-            "password123",
-            "Fatima Ibrahim",
-            "fatima@example.com",
-            "+2348098765432"
-        );
-        driver2.addRole(UserRole.DRIVER);
-        driver2.setIsVerified(true);
-        driver2.setIsActive(true);
-        userRepository.save(driver2);
-        LOG.info("✅ Created driver: " + driver2.getFullName());
-        
-        return List.of(rider, driver1, driver2);
+        driver.addRole(UserRole.DRIVER);
+        driver.setIsVerified(true);
+        driver.setIsActive(true);
+        userRepository.persistAndFlush(driver);
+        LOG.info("✅ Created driver: " + driver.getFullName());
+        return driver;
     }
     
     /**
-     * Seed sample vehicles
+     * Get or create demo driver 2
      */
-    private void seedVehicles(User driver1, User driver2) {
-        Vehicle vehicle1 = new Vehicle(
-            driver1,
-            "Toyota",
-            "Camry",
-            2020,
-            "Black",
-            "ABC-123-DE",
-            4
-        );
-        vehicle1.setVehicleType(VehicleType.SEDAN);
-        vehicle1.setIsVerified(true);
-        vehicleRepository.save(vehicle1);
-        LOG.info("✅ Created vehicle: " + vehicle1.getDisplayName());
+private User getOrCreateDriver2() {
+    // 1. Check if username OR phone number already exists to prevent unique constraint violations
+    Optional<User> existing = userRepository.find("username = ?1 or phoneNumber = ?2", 
+                                                 "demo_driver2", "+23480987654327").firstResultOptional();
+    if (existing.isPresent()) {
+        LOG.info("✓ Driver 2 already exists (matching username or phone): " + existing.get().getFullName());
+        return existing.get();
+    }
+    
+    User driver = new User(
+        "demo_driver2",
+        "password123",
+        "Fatima Ibrahim",
+        "fatima@example.com",
+        "+23480987654327"
+    );
+    
+    driver.addRole(UserRole.DRIVER);
+    driver.setIsVerified(true);
+    driver.setIsActive(true);
+    
+    // 2. Use persist() to save. 
+    // This avoids forcing a write to the DB until the whole seeding transaction is ready.
+    userRepository.persist(driver);
+    
+    LOG.info("✅ Created driver: " + driver.getFullName());
+    return driver;
+}
+    
+    /**
+     * Get or create vehicle 1
+     */
+    private Vehicle getOrCreateVehicle1(User driver) {
+        String licensePlate = "ABC-123-DE";
+        Optional<Vehicle> existing = vehicleRepository.findByLicensePlate(licensePlate);
+        if (existing.isPresent()) {
+            LOG.info("✓ Vehicle 1 already exists: " + existing.get().getDisplayName());
+            return existing.get();
+        }
+    
+        Vehicle vehicle = new Vehicle(driver, "Toyota", "Camry", 2020, "Black", licensePlate, 4);
+        vehicle.setVehicleType(VehicleType.SEDAN);
+        vehicle.setIsVerified(true);
+    
+        vehicleRepository.persist(vehicle); // Removed AndFlush
+        return vehicle;
+    }
+    
+    /**
+     * Get or create vehicle 2
+     */
+    private Vehicle getOrCreateVehicle2(User driver) {
+        String licensePlate = "XYZ-789-FG";
+        Optional<Vehicle> existing = vehicleRepository.findByLicensePlate(licensePlate);
+        if (existing.isPresent()) {
+            LOG.info("✓ Vehicle 2 already exists: " + existing.get().getDisplayName());
+            return existing.get();
+        }
         
-        Vehicle vehicle2 = new Vehicle(
-            driver2,
+        Vehicle vehicle = new Vehicle(
+            driver,
             "Toyota",
             "Hiace",
             2019,
             "White",
-            "XYZ-789-FG",
+            licensePlate,
             14
         );
-        vehicle2.setVehicleType(VehicleType.MINIBUS);
-        vehicle2.setIsVerified(true);
-        vehicleRepository.save(vehicle2);
-        LOG.info("✅ Created vehicle: " + vehicle2.getDisplayName());
+        vehicle.setVehicleType(VehicleType.MINIBUS);
+        vehicle.setIsVerified(true);
+        vehicleRepository.persist(vehicle);
+        LOG.info("✅ Created vehicle: " + vehicle.getDisplayName());
+        return vehicle;
     }
     
     /**
-     * Seed sample bookings
+     * Get or create sample bookings
      */
-    private void seedBookings(User rider, Route route1, Route route2) {
+    private void getOrCreateBookings(User rider, Route route1, Route route2) {
         // Booking 1: Confirmed for tomorrow morning
-        Point pickup1 = createPoint(7.4920, 9.0600);
-        Point dropoff1 = createPoint(7.4950, 9.0765);
-        
-        Booking booking1 = new Booking(
-            rider,
-            route1,
-            pickup1,
-            dropoff1,
-            LocalDateTime.now().plusDays(1).withHour(8).withMinute(0),
-            BigDecimal.valueOf(350.00)
-        );
-        booking1.setStatus(BookingStatus.CONFIRMED);
-        booking1.setPassengerCount(1);
-        booking1.setDistanceKm(BigDecimal.valueOf(3.2));
-        booking1.setConfirmedAt(LocalDateTime.now());
-        bookingRepository.save(booking1);
-        LOG.info("✅ Created confirmed booking for tomorrow at 8:00 AM");
+        String bookingRef1 = "SEED-BOOKING-001";
+        if (bookingRepository.findByReferenceNumber(bookingRef1).isEmpty()) {
+            Point pickup1 = createPoint(7.4920, 9.0600);
+            Point dropoff1 = createPoint(7.4950, 9.0765);
+            
+            Booking booking1 = new Booking(
+                rider,
+                route1,
+                pickup1,
+                dropoff1,
+                LocalDateTime.now().plusDays(1).withHour(8).withMinute(0),
+                BigDecimal.valueOf(350.00)
+            );
+            booking1.setReferenceNumber(bookingRef1);
+            booking1.setStatus(BookingStatus.CONFIRMED);
+            booking1.setPassengerCount(1);
+            booking1.setDistanceKm(BigDecimal.valueOf(3.2));
+            booking1.setConfirmedAt(LocalDateTime.now());
+            bookingRepository.persistAndFlush(booking1);
+            LOG.info("✅ Created confirmed booking for tomorrow at 8:00 AM");
+        } else {
+            LOG.info("✓ Booking 1 already exists");
+        }
         
         // Booking 2: Pending for tomorrow afternoon
-        Point pickup2 = createPoint(7.4300, 9.0950);
-        Point dropoff2 = createPoint(7.4935, 9.0625);
-        
-        Booking booking2 = new Booking(
-            rider,
-            route2,
-            pickup2,
-            dropoff2,
-            LocalDateTime.now().plusDays(1).withHour(17).withMinute(30),
-            BigDecimal.valueOf(450.00)
-        );
-        booking2.setStatus(BookingStatus.PENDING);
-        booking2.setPassengerCount(2);
-        booking2.setDistanceKm(BigDecimal.valueOf(5.8));
-        bookingRepository.save(booking2);
-        LOG.info("✅ Created pending booking for tomorrow at 5:30 PM");
+        String bookingRef2 = "SEED-BOOKING-002";
+        if (bookingRepository.findByReferenceNumber(bookingRef2).isEmpty()) {
+            Point pickup2 = createPoint(7.4300, 9.0950);
+            Point dropoff2 = createPoint(7.4935, 9.0625);
+            
+            Booking booking2 = new Booking(
+                rider,
+                route2,
+                pickup2,
+                dropoff2,
+                LocalDateTime.now().plusDays(1).withHour(17).withMinute(30),
+                BigDecimal.valueOf(450.00)
+            );
+            booking2.setReferenceNumber(bookingRef2);
+            booking2.setStatus(BookingStatus.PENDING);
+            booking2.setPassengerCount(2);
+            booking2.setDistanceKm(BigDecimal.valueOf(5.8));
+            bookingRepository.persistAndFlush(booking2);
+            LOG.info("✅ Created pending booking for tomorrow at 5:30 PM");
+        } else {
+            LOG.info("✓ Booking 2 already exists");
+        }
         
         // Booking 3: Completed from yesterday
-        Point pickup3 = createPoint(7.4905, 9.0574);
-        Point dropoff3 = createPoint(7.4935, 9.0625);
-        
-        Booking booking3 = new Booking(
-            rider,
-            route1,
-            pickup3,
-            dropoff3,
-            LocalDateTime.now().minusDays(1).withHour(9).withMinute(0),
-            BigDecimal.valueOf(300.00)
-        );
-        booking3.setStatus(BookingStatus.COMPLETED);
-        booking3.setPassengerCount(1);
-        booking3.setDistanceKm(BigDecimal.valueOf(2.5));
-        booking3.setActualPickupTime(LocalDateTime.now().minusDays(1).withHour(9).withMinute(5));
-        booking3.setActualDropoffTime(LocalDateTime.now().minusDays(1).withHour(9).withMinute(20));
-        booking3.setCompletedAt(LocalDateTime.now().minusDays(1).withHour(9).withMinute(20));
-        booking3.setRiderRating(5);
-        booking3.setDriverRating(5);
-        bookingRepository.save(booking3);
-        LOG.info("✅ Created completed booking from yesterday");
+        String bookingRef3 = "SEED-BOOKING-003";
+        if (bookingRepository.findByReferenceNumber(bookingRef3).isEmpty()) {
+            Point pickup3 = createPoint(7.4905, 9.0574);
+            Point dropoff3 = createPoint(7.4935, 9.0625);
+            
+            Booking booking3 = new Booking(
+                rider,
+                route1,
+                pickup3,
+                dropoff3,
+                LocalDateTime.now().minusDays(1).withHour(9).withMinute(0),
+                BigDecimal.valueOf(300.00)
+            );
+            booking3.setReferenceNumber(bookingRef3);
+            booking3.setStatus(BookingStatus.COMPLETED);
+            booking3.setPassengerCount(1);
+            booking3.setDistanceKm(BigDecimal.valueOf(2.5));
+            booking3.setActualPickupTime(LocalDateTime.now().minusDays(1).withHour(9).withMinute(5));
+            booking3.setActualDropoffTime(LocalDateTime.now().minusDays(1).withHour(9).withMinute(20));
+            booking3.setCompletedAt(LocalDateTime.now().minusDays(1).withHour(9).withMinute(20));
+            booking3.setRiderRating(5);
+            booking3.setDriverRating(5);
+            bookingRepository.persistAndFlush(booking3);
+            LOG.info("✅ Created completed booking from yesterday");
+        } else {
+            LOG.info("✓ Booking 3 already exists");
+        }
     }
     
     /**
      * Route 1: Central Business District to Maitama
      */
-    private Route seedCentralToMaitama(UUID driverId) {
+    
+    private Route getOrCreateCentralToMaitama(UUID driverId) {
+        String routeName = "Central Area → Maitama";
+        Optional<Route> existing = routeRepository.findByName(routeName);
+        if (existing.isPresent()) {
+            LOG.info("✓ Route already exists: " + routeName);
+            return existing.get();
+        }
+
         // Create route geometry (polyline)
         Coordinate[] coords = new Coordinate[]{
             new Coordinate(7.4905, 9.0574),  // Central Area
@@ -245,37 +321,39 @@ public class DatabaseSeeder {
             new Coordinate(7.4935, 9.0625),  // Wuse
             new Coordinate(7.4950, 9.0765)   // Maitama
         };
-        
         LineString geometry = geometryFactory.createLineString(coords);
         geometry.setSRID(4326);
-        
-        Route route = new Route(
-            "Central Area → Maitama",
-            geometry,
-            driverId
-        );
+
+        Route route = new Route(routeName, geometry, driverId);
         route.setDescription("Morning commute through central Abuja");
-        route.setDistanceKm(BigDecimal.valueOf(5.2).doubleValue());
+        route.setDistanceKm(5.2);
         route.setIsPublished(true);
         route.setMaxDeviationMeters(500);
-        
-        // Save route
-        route = routeRepository.save(route);
-        
-        // Add virtual stops
+
+        // Add virtual stops to the object FIRST
         addVirtualStop(route, "Central Business District", 7.4905, 9.0574, 0, 0);
         addVirtualStop(route, "Area 3 Junction", 7.4920, 9.0600, 1, 5);
         addVirtualStop(route, "Wuse Market", 7.4935, 9.0625, 2, 10);
         addVirtualStop(route, "Maitama District", 7.4950, 9.0765, 3, 15);
-        
-        LOG.info("✅ Created route: Central Area → Maitama");
+
+        // NOW persist the whole thing
+        routeRepository.persistAndFlush(route);
+
+        LOG.info("✅ Created route with stops: " + routeName);
         return route;
     }
     
     /**
      * Route 2: Gwarinpa to Wuse
      */
-    private Route seedGwarinpaToWuse(UUID driverId) {
+    private Route getOrCreateGwarinpaToWuse(UUID driverId) {
+        String routeName = "Gwarinpa → Wuse";
+        Optional<Route> existing = routeRepository.findByName(routeName);
+        if (existing.isPresent()) {
+            LOG.info("✓ Route already exists: " + routeName);
+            return existing.get();
+        }
+        
         Coordinate[] coords = new Coordinate[]{
             new Coordinate(7.4124, 9.1108),  // Gwarinpa
             new Coordinate(7.4300, 9.0950),  // Dutse
@@ -287,7 +365,7 @@ public class DatabaseSeeder {
         geometry.setSRID(4326);
         
         Route route = new Route(
-            "Gwarinpa → Wuse",
+            routeName,
             geometry,
             driverId
         );
@@ -295,21 +373,28 @@ public class DatabaseSeeder {
         route.setDistanceKm(BigDecimal.valueOf(8.5).doubleValue());
         route.setIsPublished(true);
         
-        route = routeRepository.save(route);
+        routeRepository.persistAndFlush(route);
         
         addVirtualStop(route, "Gwarinpa Estate", 7.4124, 9.1108, 0, 0);
         addVirtualStop(route, "Dutse Junction", 7.4300, 9.0950, 1, 8);
         addVirtualStop(route, "Berger Roundabout", 7.4500, 9.0800, 2, 15);
         addVirtualStop(route, "Wuse Zone 5", 7.4935, 9.0625, 3, 20);
         
-        LOG.info("✅ Created route: Gwarinpa → Wuse");
+        LOG.info("✅ Created route: " + routeName);
         return route;
     }
     
     /**
      * Route 3: Kubwa to Jabi
      */
-    private Route seedKubowaToJabi(UUID driverId) {
+    private Route getOrCreateKubowaToJabi(UUID driverId) {
+        String routeName = "Kubwa → Jabi";
+        Optional<Route> existing = routeRepository.findByName(routeName);
+        if (existing.isPresent()) {
+            LOG.info("✓ Route already exists: " + routeName);
+            return existing.get();
+        }
+        
         Coordinate[] coords = new Coordinate[]{
             new Coordinate(7.3386, 9.0965),  // Kubwa
             new Coordinate(7.3700, 9.0850),  // Gwarinpa Junction
@@ -321,7 +406,7 @@ public class DatabaseSeeder {
         geometry.setSRID(4326);
         
         Route route = new Route(
-            "Kubwa → Jabi",
+            routeName,
             geometry,
             driverId
         );
@@ -329,14 +414,14 @@ public class DatabaseSeeder {
         route.setDistanceKm(BigDecimal.valueOf(12.3).doubleValue());
         route.setIsPublished(true);
         
-        route = routeRepository.save(route);
+        routeRepository.persistAndFlush(route);
         
         addVirtualStop(route, "Kubwa Market", 7.3386, 9.0965, 0, 0);
         addVirtualStop(route, "Gwarinpa Junction", 7.3700, 9.0850, 1, 10);
         addVirtualStop(route, "Wuye District", 7.4200, 9.0750, 2, 18);
         addVirtualStop(route, "Jabi Lake Mall", 7.4600, 9.0700, 3, 25);
         
-        LOG.info("✅ Created route: Kubwa → Jabi");
+        LOG.info("✅ Created route: " + routeName);
         return route;
     }
     

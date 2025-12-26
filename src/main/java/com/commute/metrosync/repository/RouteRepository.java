@@ -1,37 +1,41 @@
 package com.commute.metrosync.repository;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.TypedQuery;
+import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import com.commute.metrosync.entity.Route;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.geom.Coordinate;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Repository for Route entity with PostGIS geospatial queries.
- * Uses Jakarta Persistence EntityManager for native spatial queries.
- */
 @ApplicationScoped
-public class RouteRepository {
+public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
     
-    @Inject
-    EntityManager em;
+    /**
+     * Find route by name (for seeder idempotency)
+     */
+    public Optional<Route> findByName(String name) {
+        return find("name", name).firstResultOptional();
+    }
     
-    private final GeometryFactory geometryFactory = new GeometryFactory();
+    /**
+     * Find routes by driver
+     */
+    public List<Route> findByDriverId(UUID driverId) {
+        return find("driverId = ?1 order by createdAt desc", driverId).list();
+    }
+    
+    /**
+     * Find published routes
+     */
+    public List<Route> findPublishedRoutes() {
+        return find("isPublished = true and isActive = true").list();
+    }
     
     /**
      * Find routes passing within a specified distance of a point.
      * Uses PostGIS ST_DWithin with geography for accurate distance calculation.
-     * 
-     * @param userLocation User's current location (Point)
-     * @param radiusMeters Search radius in meters
-     * @return List of routes within range
      */
     public List<Route> findRoutesWithinDistance(Point userLocation, double radiusMeters) {
         String sql = """
@@ -49,7 +53,7 @@ public class RouteRepository {
             )
             LIMIT 20
         """;
-        return em.createNativeQuery(sql, Route.class)
+        return getEntityManager().createNativeQuery(sql, Route.class)
                 .setParameter("lon", userLocation.getX())
                 .setParameter("lat", userLocation.getY())
                 .setParameter("radius", radiusMeters)
@@ -58,12 +62,6 @@ public class RouteRepository {
     
     /**
      * Find routes with calculated distance from user location.
-     * Uses native SQL for optimal PostGIS performance.
-     * 
-     * @param longitude User longitude
-     * @param latitude User latitude
-     * @param maxDistanceMeters Maximum distance in meters
-     * @return List of routes with distance
      */
     public List<RouteWithDistance> findRoutesWithDistanceNative(
             double longitude, 
@@ -92,7 +90,8 @@ public class RouteRepository {
             LIMIT 20
             """;
         
-        return em.createNativeQuery(sql, "RouteWithDistanceMapping")
+        return getEntityManager()
+                .createNativeQuery(sql, "RouteWithDistanceMapping")
                 .setParameter("lon", longitude)
                 .setParameter("lat", latitude)
                 .setParameter("maxDistance", maxDistanceMeters)
@@ -101,11 +100,6 @@ public class RouteRepository {
     
     /**
      * Find closest point on route to a given location.
-     * Uses ST_ClosestPoint to find optimal pickup/dropoff point.
-     * 
-     * @param routeId Route UUID
-     * @param userLocation User's location
-     * @return Closest point on route geometry
      */
     public Point findClosestPointOnRoute(UUID routeId, Point userLocation) {
         String sql = """
@@ -119,7 +113,7 @@ public class RouteRepository {
             WHERE r.id = :routeId
             """;
         
-        String wkt = (String) em.createNativeQuery(sql)
+        String wkt = (String) getEntityManager().createNativeQuery(sql)
                 .setParameter("routeId", routeId)
                 .setParameter("lon", userLocation.getX())
                 .setParameter("lat", userLocation.getY())
@@ -132,11 +126,6 @@ public class RouteRepository {
     
     /**
      * Check if a point is within deviation tolerance of route.
-     * 
-     * @param routeId Route UUID
-     * @param point Point to check
-     * @param maxDeviationMeters Maximum allowed deviation
-     * @return true if point is within tolerance
      */
     public boolean isPointNearRoute(UUID routeId, Point point, double maxDeviationMeters) {
         String sql = """
@@ -151,7 +140,7 @@ public class RouteRepository {
             )
             """;
         
-        return (Boolean) em.createNativeQuery(sql)
+        return (Boolean) getEntityManager().createNativeQuery(sql)
                 .setParameter("routeId", routeId)
                 .setParameter("lon", point.getX())
                 .setParameter("lat", point.getY())
@@ -161,13 +150,6 @@ public class RouteRepository {
     
     /**
      * Find drivers heading in the direction of a destination.
-     * Uses azimuth calculation for directional matching.
-     * 
-     * @param origin Starting point
-     * @param destination End point
-     * @param toleranceDegrees Azimuth tolerance (e.g., 45 degrees)
-     * @param radiusMeters Search radius from origin
-     * @return Routes heading in similar direction
      */
     public List<Route> findRoutesHeadingTowards(
             Point origin, 
@@ -201,7 +183,7 @@ public class RouteRepository {
             ) < :tolerance
             """;
         
-        return em.createNativeQuery(sql, Route.class)
+        return getEntityManager().createNativeQuery(sql, Route.class)
                 .setParameter("originLon", origin.getX())
                 .setParameter("originLat", origin.getY())
                 .setParameter("destLon", destination.getX())
@@ -211,30 +193,8 @@ public class RouteRepository {
                 .getResultList();
     }
     
-    // Standard CRUD operations
-    public Optional<Route> findById(UUID id) {
-        return Optional.ofNullable(em.find(Route.class, id));
-    }
-    
-    public Route save(Route route) {
-        if (route.getId() == null) {
-            em.persist(route);
-            return route;
-        } else {
-            return em.merge(route);
-        }
-    }
-    
-    public void delete(UUID id) {
-        findById(id).ifPresent(em::remove);
-    }
-    
-    public List<Route> findByDriverId(UUID driverId) {
-        return em.createQuery(
-                "SELECT r FROM Route r WHERE r.driverId = :driverId ORDER BY r.createdAt DESC", 
-                Route.class)
-                .setParameter("driverId", driverId)
-                .getResultList();
+    public void flush() {
+        getEntityManager().flush();
     }
     
     /**

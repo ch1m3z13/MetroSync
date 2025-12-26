@@ -38,4 +38,8 @@ build/
 .vscode/
 
 ### Mac OS ###
-.DS_Store
+.DS_Store.env
+
+# Secrets and Credentials
+src/main/resources/privateKey.pem
+.env

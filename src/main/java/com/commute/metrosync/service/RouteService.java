@@ -108,7 +108,8 @@ public class RouteService {
         // Calculate distance (could be done in DB trigger)
         route.setDistanceKm(calculateDistance(route));
         
-        return routeRepository.save(route);
+        routeRepository.persist(route);
+        return route;
     }
     
     /**
