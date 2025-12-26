@@ -15,7 +15,7 @@ CREATE TABLE routes (
     name VARCHAR(200) NOT NULL,
     description VARCHAR(1000),
     geometry geometry(LineString, 4326) NOT NULL,
-    distance_km NUMERIC(10, 2),
+    distance_km DOUBLE PRECISION,
     driver_id UUID NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT true,
     is_published BOOLEAN NOT NULL DEFAULT false,

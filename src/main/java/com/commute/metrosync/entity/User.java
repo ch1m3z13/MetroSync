@@ -199,4 +199,7 @@ public class User extends BaseEntity {
     public void setBookingsAsRider(List<Booking> bookingsAsRider) { 
         this.bookingsAsRider = bookingsAsRider; 
     }
+
+    public String getRole() { return this.roles; }
+    public void setRole(String role) { this.roles = role; }
 }

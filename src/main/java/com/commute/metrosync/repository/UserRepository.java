@@ -1,61 +1,39 @@
 package com.commute.metrosync.repository;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
+import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import com.commute.metrosync.entity.*;
 import org.locationtech.jts.geom.Point;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 @ApplicationScoped
-public class UserRepository {
+public class UserRepository implements PanacheRepositoryBase<User, UUID> {
     
-    @Inject
-    EntityManager em;
-    
-    public Optional<User> findById(UUID id) {
-        return Optional.ofNullable(em.find(User.class, id));
-    }
+    // ✅ Don't override findById - use Panache's built-in methods:
+    // - findById(UUID) -> returns User (nullable)
+    // - findByIdOptional(UUID) -> returns Optional<User>
     
     public Optional<User> findByUsername(String username) {
-        return em.createQuery(
-                "SELECT u FROM User u WHERE u.username = :username", User.class)
-                .setParameter("username", username)
-                .getResultStream()
-                .findFirst();
+        return find("username", username).firstResultOptional();
     }
     
     public Optional<User> findByEmail(String email) {
-        return em.createQuery(
-                "SELECT u FROM User u WHERE u.email = :email", User.class)
-                .setParameter("email", email)
-                .getResultStream()
-                .findFirst();
+        return find("email", email).firstResultOptional();
     }
     
     public Optional<User> findByPhoneNumber(String phoneNumber) {
-        return em.createQuery(
-                "SELECT u FROM User u WHERE u.phoneNumber = :phone", User.class)
-                .setParameter("phone", phoneNumber)
-                .getResultStream()
-                .findFirst();
+        return find("phoneNumber", phoneNumber).firstResultOptional();
     }
     
-    public User save(User user) {
-        if (user.getId() == null) {
-            em.persist(user);
-            return user;
-        } else {
-            return em.merge(user);
-        }
+    public boolean existsByUsername(String username) {
+        return find("username", username).count() > 0;
     }
     
-    public void delete(UUID id) {
-        findById(id).ifPresent(em::remove);
+    public boolean existsByEmail(String email) {
+        return find("email", email).count() > 0;
     }
     
     public List<User> findDriversNearLocation(Point location, double radiusMeters) {
@@ -75,26 +53,16 @@ public class UserRepository {
             )
             """;
         
-        return em.createNativeQuery(sql, User.class)
+        return getEntityManager()
+                .createNativeQuery(sql, User.class)
                 .setParameter("lon", location.getX())
                 .setParameter("lat", location.getY())
                 .setParameter("radius", radiusMeters)
                 .getResultList();
     }
     
-    public boolean existsByUsername(String username) {
-        Long count = em.createQuery(
-                "SELECT COUNT(u) FROM User u WHERE u.username = :username", Long.class)
-                .setParameter("username", username)
-                .getSingleResult();
-        return count > 0;
-    }
-    
-    public boolean existsByEmail(String email) {
-        Long count = em.createQuery(
-                "SELECT COUNT(u) FROM User u WHERE u.email = :email", Long.class)
-                .setParameter("email", email)
-                .getSingleResult();
-        return count > 0;
+    // Helper method to flush changes to the database
+    public void flush() {
+        getEntityManager().flush();
     }
 }

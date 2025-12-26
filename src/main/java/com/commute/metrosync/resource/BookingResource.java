@@ -64,19 +64,20 @@ public class BookingResource {
                     .build();
         }
     }
-    
-    /**
-     * Get booking details.
-     */
+
     @GET
     @Path("/{bookingId}")
     @RolesAllowed({"RIDER", "DRIVER"})
     @Operation(summary = "Get booking details")
     public Response getBooking(@PathParam("bookingId") UUID bookingId) {
-        return bookingRepository.findById(bookingId)
-                .map(booking -> Response.ok(toDTO(booking)).build())
-                .orElse(Response.status(Response.Status.NOT_FOUND).build());
+        Booking booking = bookingRepository.findById(bookingId);
+        
+    if (booking == null) {
+        return Response.status(Response.Status.NOT_FOUND).build();
     }
+    
+    return Response.ok(toDTO(booking)).build();
+}
     
     /**
      * Confirm a booking (Driver only).

@@ -97,6 +97,7 @@ CREATE TABLE bookings (
     cancelled_at TIMESTAMP,
     confirmed_at TIMESTAMP,
     completed_at TIMESTAMP,
+    reference_number VARCHAR(255) NOT NULL,
     version BIGINT DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
