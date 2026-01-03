@@ -44,3 +44,7 @@ build/
 src/main/resources/privateKey.pem
 .env
 mvnw
+
+# Ignore security keys
+src/main/resources/META-INF/*.pem
+**/META-INF/*.pem
