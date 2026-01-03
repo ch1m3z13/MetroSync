@@ -10,7 +10,8 @@ import java.util.Set;
 @ApplicationScoped
 public class TokenService {
     
-    @ConfigProperty(name = "jwt.duration", defaultValue = "86400") // 24 hours
+    // ✅ Renamed to match application.properties
+    @ConfigProperty(name = "jwt.access.token.duration", defaultValue = "86400")
     Long tokenDuration;
     
     /**
