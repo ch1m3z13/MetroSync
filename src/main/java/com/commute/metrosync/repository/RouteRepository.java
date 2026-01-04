@@ -8,6 +8,7 @@ import org.locationtech.jts.geom.Point;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
@@ -37,6 +38,7 @@ public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
      * Find routes passing within a specified distance of a point.
      * Uses PostGIS ST_DWithin with geography for accurate distance calculation.
      */
+    @SuppressWarnings("unchecked")
     public List<Route> findRoutesWithinDistance(Point userLocation, double radiusMeters) {
         String sql = """
             SELECT * FROM routes r
@@ -63,6 +65,7 @@ public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
     /**
      * Find routes with calculated distance from user location.
      */
+    @SuppressWarnings("unchecked")
     public List<RouteWithDistance> findRoutesWithDistanceNative(
             double longitude, 
             double latitude, 
@@ -90,12 +93,21 @@ public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
             LIMIT 20
             """;
         
-        return getEntityManager()
-                .createNativeQuery(sql, "RouteWithDistanceMapping")
+        // FIX: Mapping manually to avoid SqlResultSetMapping requirement
+        List<Object[]> results = getEntityManager()
+                .createNativeQuery(sql)
                 .setParameter("lon", longitude)
                 .setParameter("lat", latitude)
                 .setParameter("maxDistance", maxDistanceMeters)
                 .getResultList();
+
+        return results.stream().map(row -> new RouteWithDistance(
+            (UUID) row[0],
+            (String) row[1],
+            row[2] != null ? ((Number) row[2]).doubleValue() : 0.0,
+            (UUID) row[3],
+            ((Number) row[4]).doubleValue()
+        )).collect(Collectors.toList());
     }
     
     /**
@@ -119,9 +131,8 @@ public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
                 .setParameter("lat", userLocation.getY())
                 .getSingleResult();
         
-        // Parse WKT and return Point
-        // In production, use JTS WKTReader
-        return userLocation; // Simplified for example
+        // Return original location as fallback/placeholder since we aren't parsing WKT here
+        return userLocation; 
     }
     
     /**
@@ -151,6 +162,7 @@ public class RouteRepository implements PanacheRepositoryBase<Route, UUID> {
     /**
      * Find drivers heading in the direction of a destination.
      */
+    @SuppressWarnings("unchecked")
     public List<Route> findRoutesHeadingTowards(
             Point origin, 
             Point destination,

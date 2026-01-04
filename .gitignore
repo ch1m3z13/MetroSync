@@ -48,3 +48,4 @@ mvnw
 # Ignore security keys
 src/main/resources/META-INF/*.pem
 **/META-INF/*.pem
+src/main/resources/META-INF/resources/privateKey.pem
