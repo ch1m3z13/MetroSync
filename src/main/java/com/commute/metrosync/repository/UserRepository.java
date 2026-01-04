@@ -2,7 +2,7 @@ package com.commute.metrosync.repository;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
-import com.commute.metrosync.entity.*;
+import com.commute.metrosync.entity.User;
 import org.locationtech.jts.geom.Point;
 
 import java.util.List;
@@ -11,10 +11,6 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class UserRepository implements PanacheRepositoryBase<User, UUID> {
-    
-    // ✅ Don't override findById - use Panache's built-in methods:
-    // - findById(UUID) -> returns User (nullable)
-    // - findByIdOptional(UUID) -> returns Optional<User>
     
     public Optional<User> findByUsername(String username) {
         return find("username", username).firstResultOptional();
@@ -36,6 +32,7 @@ public class UserRepository implements PanacheRepositoryBase<User, UUID> {
         return find("email", email).count() > 0;
     }
     
+    @SuppressWarnings("unchecked") // Fixes the warning about raw List casting
     public List<User> findDriversNearLocation(Point location, double radiusMeters) {
         String sql = """
             SELECT u.* FROM users u

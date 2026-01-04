@@ -92,6 +92,10 @@ public class User extends BaseEntity {
     
     @Column(name = "last_login")
     private LocalDateTime lastLogin;
+
+    // ADDED: Driver Status field to match database column and fix SemanticException
+    @Column(name = "driver_status", length = 20)
+    private String driverStatus = "OFFLINE";
     
     // Relationships
     @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL, orphanRemoval = true)
@@ -192,6 +196,9 @@ public class User extends BaseEntity {
     public LocalDateTime getLastLogin() { return lastLogin; }
     public void setLastLogin(LocalDateTime lastLogin) { this.lastLogin = lastLogin; }
     
+    public String getDriverStatus() { return driverStatus; }
+    public void setDriverStatus(String driverStatus) { this.driverStatus = driverStatus; }
+
     public List<Vehicle> getVehicles() { return vehicles; }
     public void setVehicles(List<Vehicle> vehicles) { this.vehicles = vehicles; }
     
