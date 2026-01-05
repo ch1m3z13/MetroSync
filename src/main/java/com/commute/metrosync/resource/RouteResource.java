@@ -3,6 +3,7 @@ package com.commute.metrosync.resource;
 import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -14,6 +15,7 @@ import com.commute.metrosync.entity.Route;
 import com.commute.metrosync.entity.VirtualStop;
 import com.commute.metrosync.repository.RouteRepository;
 import com.commute.metrosync.service.RouteService;
+import com.commute.metrosync.dto.*;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -22,11 +24,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-/**
- * REST API for route operations.
- * Public endpoints allow unauthenticated users to browse available routes.
- * Protected endpoints require authentication for route management.
- */
 @Path("/routes")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -39,43 +36,24 @@ public class RouteResource {
     @Inject
     RouteRepository routeRepository;
     
+    // ==================== PUBLIC ENDPOINTS ====================
+    
     /**
-     * PUBLIC: Find drivers passing near a location.
-     * Primary endpoint for rider-driver matching.
-     * No authentication required - allows users to browse before signing up.
+     * PUBLIC: Find drivers passing near a location
      */
     @GET
     @Path("/nearby")
     @PermitAll
     @Operation(
         summary = "Find nearby drivers (Public)",
-        description = "Search for drivers passing within specified radius of a location. No authentication required."
+        description = "Search for drivers passing within specified radius"
     )
     public Response findNearbyDrivers(
-            @QueryParam("lat") 
-            @NotNull
-            @DecimalMin("-90") @DecimalMax("90")
-            @Parameter(description = "Latitude", required = true, example = "9.0765")
-            Double latitude,
-            
-            @QueryParam("lon") 
-            @NotNull
-            @DecimalMin("-180") @DecimalMax("180")
-            @Parameter(description = "Longitude", required = true, example = "7.3986")
-            Double longitude,
-            
-            @QueryParam("radius") 
-            @DefaultValue("500")
-            @Parameter(description = "Search radius in meters", example = "500")
-            Double radiusMeters) {
+            @QueryParam("lat") @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
+            @QueryParam("lon") @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
+            @QueryParam("radius") @DefaultValue("500") Double radiusMeters) {
         
-        List<Route> routes = routeService.findNearbyDrivers(
-            latitude, 
-            longitude, 
-            radiusMeters
-        );
-        
-        // Convert to DTOs with limited information for public access
+        List<Route> routes = routeService.findNearbyDrivers(latitude, longitude, radiusMeters);
         List<PublicRouteDTO> routeDTOs = routes.stream()
             .map(this::toPublicDTO)
             .collect(Collectors.toList());
@@ -84,16 +62,12 @@ public class RouteResource {
     }
     
     /**
-     * PUBLIC: Find drivers heading towards a destination.
-     * No authentication required.
+     * PUBLIC: Find drivers heading towards a destination
      */
     @GET
     @Path("/heading-to")
     @PermitAll
-    @Operation(
-        summary = "Find drivers heading towards destination (Public)",
-        description = "Search for drivers heading in the direction of your destination. No authentication required."
-    )
+    @Operation(summary = "Find drivers heading towards destination")
     public Response findDriversHeadingTo(
             @QueryParam("originLat") @NotNull Double originLat,
             @QueryParam("originLon") @NotNull Double originLon,
@@ -102,49 +76,30 @@ public class RouteResource {
             @QueryParam("radius") @DefaultValue("1000") Double radius) {
         
         List<Route> routes = routeService.findDriversHeadingTo(
-            originLat, originLon,
-            destLat, destLon,
-            radius
+            originLat, originLon, destLat, destLon, radius
         );
         
-        List<PublicRouteDTO> routeDTOs = routes.stream()
-            .map(this::toPublicDTO)
-            .collect(Collectors.toList());
-        
-        return Response.ok(routeDTOs).build();
+        return Response.ok(routes.stream().map(this::toPublicDTO).toList()).build();
     }
     
     /**
-     * PUBLIC: Get all published routes.
-     * Allows browsing all available routes.
+     * PUBLIC: Get all published routes
      */
     @GET
     @PermitAll
-    @Operation(
-        summary = "List all published routes (Public)",
-        description = "Get all active and published routes. No authentication required."
-    )
+    @Operation(summary = "List all published routes")
     public Response listPublishedRoutes() {
         List<Route> routes = routeRepository.findPublishedRoutes();
-        
-        List<PublicRouteDTO> routeDTOs = routes.stream()
-            .map(this::toPublicDTO)
-            .collect(Collectors.toList());
-        
-        return Response.ok(routeDTOs).build();
+        return Response.ok(routes.stream().map(this::toPublicDTO).toList()).build();
     }
     
     /**
-     * PUBLIC: Get details of a specific route.
-     * Includes virtual stops and route geometry.
+     * PUBLIC: Get route details
      */
     @GET
     @Path("/{routeId}")
     @PermitAll
-    @Operation(
-        summary = "Get route details (Public)",
-        description = "Get detailed information about a specific route including stops. No authentication required."
-    )
+    @Operation(summary = "Get route details")
     public Response getRouteDetails(@PathParam("routeId") UUID routeId) {
         Route route = routeRepository.findByIdOptional(routeId)
             .orElseThrow(() -> new NotFoundException("Route not found"));
@@ -157,63 +112,34 @@ public class RouteResource {
     }
     
     /**
-     * PUBLIC: Validate if a point is a valid pickup location for a route.
-     * Useful for showing users if they can book from their location.
+     * PUBLIC: Validate pickup point
      */
     @GET
     @Path("/{routeId}/validate-pickup")
     @PermitAll
-    @Operation(
-        summary = "Validate pickup point (Public)",
-        description = "Check if a location is within acceptable distance from the route. No authentication required."
-    )
+    @Operation(summary = "Validate pickup point")
     public Response validatePickupPoint(
             @PathParam("routeId") UUID routeId,
             @QueryParam("lat") @NotNull Double latitude,
             @QueryParam("lon") @NotNull Double longitude) {
         
-        boolean isValid = routeService.isValidPickupPoint(
-            routeId, 
-            latitude, 
-            longitude
-        );
-        
+        boolean isValid = routeService.isValidPickupPoint(routeId, latitude, longitude);
         return Response.ok(new ValidationResponse(isValid)).build();
     }
     
-    /**
-     * PROTECTED: Create a new route (Drivers only).
-     */
-    @POST
-    @RolesAllowed({"DRIVER"})
-    @Operation(
-        summary = "Create a new route (Driver only)",
-        description = "Create a new route. Requires driver authentication."
-    )
-    public Response createRoute(@Valid RouteService.CreateRouteRequest request) {
-        Route route = routeService.createRoute(request);
-        return Response.status(Response.Status.CREATED)
-                .entity(toDetailedDTO(route))
-                .build();
-    }
+    // ==================== PROTECTED ENDPOINTS (DRIVER ONLY) ====================
     
     /**
-     * PROTECTED: Get driver's own routes.
+     * NEW: Get driver's own routes
      */
     @GET
     @Path("/my-routes")
     @RolesAllowed({"DRIVER"})
     @Operation(
-        summary = "Get driver's routes (Driver only)",
-        description = "Get all routes owned by the authenticated driver."
+        summary = "Get driver's routes",
+        description = "Get all routes owned by the authenticated driver"
     )
-    public Response getMyRoutes(@QueryParam("driverId") UUID driverId) {
-        if (driverId == null) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                .entity(new ErrorResponse("Driver ID is required"))
-                .build();
-        }
-        
+    public Response getMyRoutes(@QueryParam("driverId") @NotNull UUID driverId) {
         List<Route> routes = routeRepository.findByDriverId(driverId);
         List<DetailedRouteDTO> routeDTOs = routes.stream()
             .map(this::toDetailedDTO)
@@ -222,11 +148,153 @@ public class RouteResource {
         return Response.ok(routeDTOs).build();
     }
     
-    // ==================== Helper Methods ====================
+    /**
+     * Create a new route
+     */
+    @POST
+    @RolesAllowed({"DRIVER"})
+    @Transactional
+    @Operation(summary = "Create a new route")
+    public Response createRoute(@Valid CreateRouteRequest request) {
+        // Convert to simple coordinate DTOs
+        List<RouteService.CoordinateDTO> coords = request.coordinates().stream()
+            .map(c -> new RouteService.CoordinateDTO(c.latitude(), c.longitude()))
+            .toList();
+        
+        Route route = routeService.createRoute(
+            request.name(),
+            request.description(),
+            coords,
+            request.driverId()
+        );
+        
+        return Response.status(Response.Status.CREATED)
+                .entity(toDetailedDTO(route))
+                .build();
+    }
     
     /**
-     * Convert Route to public DTO (limited information for unauthenticated users)
+     * NEW: Update existing route
      */
+    @PUT
+    @Path("/{routeId}")
+    @RolesAllowed({"DRIVER"})
+    @Transactional
+    @Operation(
+        summary = "Update route",
+        description = "Update an existing route. Driver must own the route."
+    )
+    public Response updateRoute(
+            @PathParam("routeId") UUID routeId,
+            @Valid UpdateRouteRequest request) {
+        
+        try {
+            // Convert coordinates if provided
+            List<RouteService.CoordinateDTO> coords = null;
+            if (request.coordinates() != null) {
+                coords = request.coordinates().stream()
+                    .map(c -> new RouteService.CoordinateDTO(c.latitude(), c.longitude()))
+                    .toList();
+            }
+            
+            Route route = routeService.updateRoute(
+                routeId,
+                request.driverId(),
+                request.name(),
+                request.description(),
+                coords
+            );
+            
+            return Response.ok(toDetailedDTO(route)).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse(e.getMessage()))
+                    .build();
+        }
+    }
+    
+    /**
+     * NEW: Delete route
+     */
+    @DELETE
+    @Path("/{routeId}")
+    @RolesAllowed({"DRIVER"})
+    @Transactional
+    @Operation(
+        summary = "Delete route",
+        description = "Soft delete a route. Driver must own the route."
+    )
+    public Response deleteRoute(@PathParam("routeId") UUID routeId) {
+        try {
+            routeService.deleteRoute(routeId);
+            return Response.noContent().build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse(e.getMessage()))
+                    .build();
+        }
+    }
+    
+    /**
+     * NEW: Activate route (set as driver's active route)
+     */
+    @POST
+    @Path("/{routeId}/activate")
+    @RolesAllowed({"DRIVER"})
+    @Transactional
+    @Operation(
+        summary = "Activate route",
+        description = "Set this route as the driver's active route for accepting bookings"
+    )
+    public Response activateRoute(
+            @PathParam("routeId") UUID routeId,
+            @Valid ActivateRouteRequest request) {
+        
+        try {
+            routeService.activateRoute(routeId, request.driverId());
+            return Response.ok(new RouteStatusResponse(
+                routeId.toString(),
+                "ACTIVE",
+                "Route activated successfully"
+            )).build();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse(e.getMessage()))
+                    .build();
+        }
+    }
+    
+    /**
+     * NEW: Deactivate route
+     */
+    @POST
+    @Path("/{routeId}/deactivate")
+    @RolesAllowed({"DRIVER"})
+    @Transactional
+    @Operation(
+        summary = "Deactivate route",
+        description = "Stop accepting bookings on this route"
+    )
+    public Response deactivateRoute(
+            @PathParam("routeId") UUID routeId,
+            @Valid DeactivateRouteRequest request) {
+        
+        try {
+            routeService.deactivateRoute(routeId, request.driverId());
+            return Response.ok(new RouteStatusResponse(
+                routeId.toString(),
+                "INACTIVE",
+                "Route deactivated successfully"
+            )).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse(e.getMessage()))
+                    .build();
+        }
+    }
+    
+    // ==================== HELPER METHODS ====================
+    
     private PublicRouteDTO toPublicDTO(Route route) {
         return new PublicRouteDTO(
             route.getId().toString(),
@@ -235,17 +303,12 @@ public class RouteResource {
             route.getDistanceKm(),
             route.getVirtualStops().size(),
             route.getMaxDeviationMeters(),
-            // Convert geometry to GeoJSON coordinates array
             extractCoordinates(route),
-            // Get first and last stop names
             getStartStopName(route),
             getEndStopName(route)
         );
     }
     
-    /**
-     * Convert Route to detailed DTO (includes stops)
-     */
     private DetailedRouteDTO toDetailedDTO(Route route) {
         List<VirtualStopDTO> stops = route.getVirtualStops().stream()
             .map(this::toStopDTO)
@@ -269,8 +332,8 @@ public class RouteResource {
             stop.getId().toString(),
             stop.getName(),
             stop.getDescription(),
-            stop.getLocation().getY(), // latitude
-            stop.getLocation().getX(), // longitude
+            stop.getLocation().getY(),
+            stop.getLocation().getX(),
             stop.getSequenceOrder(),
             stop.getTimeOffsetMinutes()
         );
@@ -280,68 +343,20 @@ public class RouteResource {
         org.locationtech.jts.geom.Coordinate[] coords = route.getGeometry().getCoordinates();
         double[][] result = new double[coords.length][2];
         for (int i = 0; i < coords.length; i++) {
-            result[i][0] = coords[i].x; // longitude
-            result[i][1] = coords[i].y; // latitude
+            result[i][0] = coords[i].x;
+            result[i][1] = coords[i].y;
         }
         return result;
     }
     
     private String getStartStopName(Route route) {
         return route.getVirtualStops().isEmpty() ? 
-            "Start" : 
-            route.getVirtualStops().get(0).getName();
+            "Start" : route.getVirtualStops().get(0).getName();
     }
     
     private String getEndStopName(Route route) {
         List<VirtualStop> stops = route.getVirtualStops();
-        return stops.isEmpty() ? 
-            "End" : 
-            stops.get(stops.size() - 1).getName();
+        return stops.isEmpty() ? "End" : stops.get(stops.size() - 1).getName();
     }
     
-    // ==================== DTOs ====================
-    
-    /**
-     * Public route DTO - limited information for unauthenticated users
-     */
-    public record PublicRouteDTO(
-        String id,
-        String name,
-        String description,
-        Double distanceKm,
-        Integer stopCount,
-        Integer maxDeviationMeters,
-        double[][] coordinates, // [longitude, latitude] pairs
-        String startPoint,
-        String endPoint
-    ) {}
-    
-    /**
-     * Detailed route DTO - includes all stops
-     */
-    public record DetailedRouteDTO(
-        String id,
-        String name,
-        String description,
-        Double distanceKm,
-        Integer maxDeviationMeters,
-        double[][] coordinates,
-        List<VirtualStopDTO> stops,
-        Boolean isActive,
-        Boolean isPublished
-    ) {}
-    
-    public record VirtualStopDTO(
-        String id,
-        String name,
-        String description,
-        Double latitude,
-        Double longitude,
-        Integer sequenceOrder,
-        Integer timeOffsetMinutes
-    ) {}
-    
-    public record ValidationResponse(boolean isValid) {}
-    
-    public record ErrorResponse(String message) {}
 }
