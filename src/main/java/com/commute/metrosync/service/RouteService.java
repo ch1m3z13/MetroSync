@@ -4,19 +4,19 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import com.commute.metrosync.entity.Route;
+import com.commute.metrosync.entity.User;
 import com.commute.metrosync.repository.RouteRepository;
+import com.commute.metrosync.repository.UserRepository;
+import com.commute.metrosync.repository.BookingRepository;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
+import org.locationtech.jts.geom.LineString;
 
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
 
-/**
- * Business logic for Route operations.
- * Handles geospatial matching and validation.
- */
 @ApplicationScoped
 public class RouteService {
     
@@ -26,17 +26,16 @@ public class RouteService {
     @Inject
     RouteRepository routeRepository;
     
+    @Inject
+    UserRepository userRepository;
+    
+    @Inject
+    BookingRepository bookingRepository;
+    
     private final GeometryFactory geometryFactory = new GeometryFactory();
     
-    /**
-     * Find drivers passing near a user's location.
-     * Core matching logic for the commuter network.
-     * 
-     * @param latitude User latitude
-     * @param longitude User longitude
-     * @param radiusMeters Optional search radius (default 500m)
-     * @return List of nearby routes
-     */
+    // ==================== SEARCH OPERATIONS ====================
+    
     public List<Route> findNearbyDrivers(
             double latitude, 
             double longitude,
@@ -59,10 +58,6 @@ public class RouteService {
         return routes;
     }
     
-    /**
-     * Find drivers heading towards a destination.
-     * Useful for directional matching.
-     */
     public List<Route> findDriversHeadingTo(
             double originLat,
             double originLon,
@@ -76,45 +71,11 @@ public class RouteService {
         return routeRepository.findRoutesHeadingTowards(
             origin,
             destination,
-            45.0, // 45-degree tolerance
+            45.0,
             radiusMeters
         );
     }
     
-    /**
-     * Create a new route for a driver.
-     * Validates geometry and calculates distance.
-     */
-    @Transactional
-    public Route createRoute(CreateRouteRequest request) {
-        // Validate coordinates
-        if (request.coordinates().size() < 2) {
-            throw new IllegalArgumentException("Route must have at least 2 coordinates");
-        }
-        
-        // Build LineString from coordinates
-        Coordinate[] coords = request.coordinates().stream()
-            .map(c -> new Coordinate(c.longitude(), c.latitude()))
-            .toArray(Coordinate[]::new);
-        
-        Route route = new Route(
-            request.name(),
-            geometryFactory.createLineString(coords),
-            request.driverId()
-        );
-        
-        route.setDescription(request.description());
-        
-        // Calculate distance (could be done in DB trigger)
-        route.setDistanceKm(calculateDistance(route));
-        
-        routeRepository.persist(route);
-        return route;
-    }
-    
-    /**
-     * Validate if a pickup point is acceptable for a route.
-     */
     public boolean isValidPickupPoint(UUID routeId, double latitude, double longitude) {
         Point pickupPoint = createPoint(longitude, latitude);
         return routeRepository.isPointNearRoute(
@@ -124,27 +85,204 @@ public class RouteService {
         );
     }
     
+    // ==================== ROUTE CRUD OPERATIONS ====================
+    
+    /**
+     * Create a new route - accepts name, description, coordinates, and driver ID
+     */
+    @Transactional
+    public Route createRoute(
+            String name,
+            String description,
+            List<CoordinateDTO> coordinates,
+            UUID driverId) {
+        
+        // Validate driver exists
+        User driver = userRepository.findByIdOptional(driverId)
+                .orElseThrow(() -> new IllegalArgumentException("Driver not found"));
+        
+        if (!driver.isDriver()) {
+            throw new IllegalArgumentException("User is not registered as a driver");
+        }
+        
+        // Validate coordinates
+        if (coordinates.size() < 2) {
+            throw new IllegalArgumentException("Route must have at least 2 coordinates");
+        }
+        
+        // Build LineString from coordinates
+        Coordinate[] coords = coordinates.stream()
+            .map(c -> new Coordinate(c.longitude(), c.latitude()))
+            .toArray(Coordinate[]::new);
+        
+        LineString geometry = geometryFactory.createLineString(coords);
+        geometry.setSRID(4326);
+        
+        Route route = new Route(name, geometry, driverId);
+        route.setDescription(description);
+        route.setDistanceKm(calculateDistance(route));
+        route.setIsPublished(false);
+        
+        routeRepository.persist(route);
+        
+        LOG.info(String.format("Created route: %s for driver: %s", 
+            route.getId(), driverId));
+        
+        return route;
+    }
+    
+    /**
+     * Update an existing route
+     */
+    @Transactional
+    public Route updateRoute(
+            UUID routeId,
+            UUID driverId,
+            String name,
+            String description,
+            List<CoordinateDTO> coordinates) {
+        
+        Route route = routeRepository.findByIdOptional(routeId)
+                .orElseThrow(() -> new IllegalArgumentException("Route not found"));
+        
+        if (!route.getDriverId().equals(driverId)) {
+            throw new IllegalArgumentException("You can only update your own routes");
+        }
+        
+        Long activeBookings = bookingRepository.count(
+            "route.id = ?1 and status in ('PENDING', 'CONFIRMED', 'IN_PROGRESS')", 
+            routeId
+        );
+        
+        if (activeBookings > 0) {
+            throw new IllegalStateException(
+                "Cannot update route with active bookings"
+            );
+        }
+        
+        if (name != null) {
+            route.setName(name);
+        }
+        
+        if (description != null) {
+            route.setDescription(description);
+        }
+        
+        if (coordinates != null && !coordinates.isEmpty()) {
+            if (coordinates.size() < 2) {
+                throw new IllegalArgumentException("Route must have at least 2 coordinates");
+            }
+            
+            Coordinate[] coords = coordinates.stream()
+                .map(c -> new Coordinate(c.longitude(), c.latitude()))
+                .toArray(Coordinate[]::new);
+            
+            LineString geometry = geometryFactory.createLineString(coords);
+            geometry.setSRID(4326);
+            
+            route.setGeometry(geometry);
+            route.setDistanceKm(calculateDistance(route));
+        }
+        
+        routeRepository.persist(route);
+        
+        LOG.info(String.format("Updated route: %s", routeId));
+        return route;
+    }
+    
+    @Transactional
+    public void deleteRoute(UUID routeId) {
+        Route route = routeRepository.findByIdOptional(routeId)
+                .orElseThrow(() -> new IllegalArgumentException("Route not found"));
+        
+        Long activeBookings = bookingRepository.count(
+            "route.id = ?1 and status in ('PENDING', 'CONFIRMED', 'IN_PROGRESS')", 
+            routeId
+        );
+        
+        if (activeBookings > 0) {
+            throw new IllegalStateException(
+                "Cannot delete route with active bookings"
+            );
+        }
+        
+        route.setIsActive(false);
+        route.setIsPublished(false);
+        
+        routeRepository.persist(route);
+        
+        LOG.info(String.format("Deleted route: %s", routeId));
+    }
+    
+    @Transactional
+    public void activateRoute(UUID routeId, UUID driverId) {
+        Route route = routeRepository.findByIdOptional(routeId)
+                .orElseThrow(() -> new IllegalArgumentException("Route not found"));
+        
+        if (!route.getDriverId().equals(driverId)) {
+            throw new IllegalArgumentException("You can only activate your own routes");
+        }
+        
+        if (!route.getIsActive()) {
+            throw new IllegalStateException("Cannot activate an inactive route");
+        }
+        
+        // Deactivate all other routes for this driver
+        List<Route> driverRoutes = routeRepository.findByDriverId(driverId);
+        for (Route r : driverRoutes) {
+            if (!r.getId().equals(routeId) && r.getIsPublished()) {
+                r.setIsPublished(false);
+            }
+        }
+        
+        route.setIsPublished(true);
+        routeRepository.persist(route);
+        
+        LOG.info(String.format("Activated route: %s for driver: %s", routeId, driverId));
+    }
+    
+    @Transactional
+    public void deactivateRoute(UUID routeId, UUID driverId) {
+        Route route = routeRepository.findByIdOptional(routeId)
+                .orElseThrow(() -> new IllegalArgumentException("Route not found"));
+        
+        if (!route.getDriverId().equals(driverId)) {
+            throw new IllegalArgumentException("You can only deactivate your own routes");
+        }
+        
+        Long inProgressBookings = bookingRepository.count(
+            "route.id = ?1 and status = 'IN_PROGRESS'", 
+            routeId
+        );
+        
+        if (inProgressBookings > 0) {
+            throw new IllegalStateException(
+                "Cannot deactivate route with rides in progress"
+            );
+        }
+        
+        route.setIsPublished(false);
+        routeRepository.persist(route);
+        
+        LOG.info(String.format("Deactivated route: %s for driver: %s", routeId, driverId));
+    }
+    
+    // ==================== HELPER METHODS ====================
+    
     private Point createPoint(double longitude, double latitude) {
         Point point = geometryFactory.createPoint(new Coordinate(longitude, latitude));
-        point.setSRID(4326); // WGS84
+        point.setSRID(4326);
         return point;
     }
     
     private Double calculateDistance(Route route) {
-        // Simplified - in production, use PostGIS ST_Length(geography)
-        return route.getGeometry().getLength() * 111.0; // Rough km conversion
+        return route.getGeometry().getLength() * 111.0;
     }
     
-    // DTOs
-    public record CreateRouteRequest(
-        String name,
-        String description,
-        List<CoordinatePair> coordinates,
-        UUID driverId
-    ) {}
+    // ==================== SIMPLE DTO ====================
     
-    public record CoordinatePair(
-        double latitude,
-        double longitude
-    ) {}
+    /**
+     * Simple coordinate DTO used across all layers
+     */
+    public record CoordinateDTO(double latitude, double longitude) {}
 }
