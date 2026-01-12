@@ -4,7 +4,7 @@ import com.commute.metrosync.dto.CommuteDTOs.*;
 import com.commute.metrosync.entity.*;
 import com.commute.metrosync.repository.*;
 import com.commute.metrosync.service.DirectionDetectorService.DetectionResult;
-import com.commute.metrosync.service.GoogleDirectionsService.RouteResponse;
+import com.commute.metrosync.service.OSRMService.RouteResponse;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
 
 /**
  * ENHANCED Commute Service with:
- * ✅ Google Directions API integration (real routes)
+ * ✅ OSRM (OpenStreetMap) integration (FREE - No API key!)
  * ✅ Multiple route variations support
  * ✅ Dynamic capacity updates
  * ✅ Smart direction auto-detection
@@ -42,17 +42,17 @@ public class EnhancedCommuteService {
     RouteRepository routeRepository;
     
     @Inject
-    GoogleDirectionsService directionsService;
+    OSRMService routingService;
     
     @Inject
     DirectionDetectorService directionDetector;
     
     private final GeometryFactory geometryFactory = new GeometryFactory();
     
-    // ==================== SAVE COMMUTE (Enhanced with Google Directions) ====================
+    // ==================== SAVE COMMUTE (Enhanced with OSRM) ====================
     
     /**
-     * Save commute and generate route variations using Google Directions API
+     * Save commute and generate route variations using OSRM (FREE!)
      */
     @Transactional
     public CommuteResponse saveCommute(SaveCommuteRequest request) {
@@ -107,19 +107,20 @@ public class EnhancedCommuteService {
         commuteRepository.persist(commute);
         commuteRepository.flush();
         
-        // 8. Generate route variations using Google Directions API
+        // 8. Generate route variations using OSRM (FREE - No API key!)
         generateRouteVariations(commute);
         
-        Log.info("Commute saved with route variations");
+        Log.info("Commute saved with route variations using OpenStreetMap");
         
         return toCommuteResponse(commute);
     }
     
     /**
-     * Generate route variations using Google Directions API
+     * Generate route variations using OSRM (Open Source Routing Machine)
+     * Completely FREE - No API key required!
      */
     private void generateRouteVariations(DriverCommute commute) {
-        Log.info("Generating route variations using Google Directions API");
+        Log.info("Generating route variations using OSRM (OpenStreetMap - FREE)");
         
         // Generate TO_WORK routes
         generateVariationsForDirection(
@@ -139,7 +140,7 @@ public class EnhancedCommuteService {
     }
     
     /**
-     * Generate route variations for a specific direction
+     * Generate route variations for a specific direction using OSRM
      */
     private void generateVariationsForDirection(
             DriverCommute commute,
@@ -148,15 +149,15 @@ public class EnhancedCommuteService {
             Point destination) {
         
         try {
-            // Get route alternatives from Google
-            List<RouteResponse> alternatives = directionsService.getRouteAlternatives(
+            // Get route alternatives from OSRM (FREE!)
+            List<RouteResponse> alternatives = routingService.getRouteAlternatives(
                 origin.getY(),  // latitude
                 origin.getX(),  // longitude
                 destination.getY(),
                 destination.getX()
             );
             
-            Log.info(String.format("Found %d route alternatives for %s", 
+            Log.info(String.format("Found %d route alternatives for %s using OSRM", 
                 alternatives.size(), direction));
             
             // Save each alternative as a RouteVariation
@@ -175,7 +176,7 @@ public class EnhancedCommuteService {
                 variation.setDescription(response.summary());
                 variation.setDistanceKm(response.distanceKm());
                 variation.setDurationMinutes(response.durationMinutes());
-                variation.setEncodedPolyline(response.encodedPolyline());
+                variation.setEncodedPolyline(""); // OSRM provides geometry directly
                 variation.setRouteSummary(response.summary());
                 variation.setIsPreferred(i == 0);  // First route is preferred
                 
@@ -193,7 +194,7 @@ public class EnhancedCommuteService {
     }
     
     /**
-     * Create simple fallback route if Google Directions fails
+     * Create simple fallback route if OSRM fails
      */
     private void createFallbackVariation(
             DriverCommute commute,
@@ -222,6 +223,8 @@ public class EnhancedCommuteService {
         variation.setIsPreferred(true);
         
         variationRepository.persist(variation);
+        
+        Log.info("Created fallback straight-line route");
     }
     
     // ==================== UPDATE CAPACITY (Dynamic) ====================
