@@ -21,7 +21,7 @@ import org.eclipse.microprofile.jwt.JsonWebToken;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-@Path("/drivers")
+@Path("/driver-dashboard")
 @Produces("application/json")
 @Consumes("application/json")
 public class DriverDashboardResource {
