@@ -14,83 +14,71 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.util.List;
 
 /**
- * REST endpoint for Google Places API (Autocomplete, Place Details)
- * Acts as a secure proxy - keeps API key on the backend
+ * REST endpoint for Self-Hosted Nominatim (Address Autocomplete)
+ * No API key needed - fully self-hosted
+ * 
+ * Frontend Integration:
+ * - Use for address autocomplete when user types
+ * - Use for reverse geocoding GPS coordinates
  */
 @Path("/places")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@Tag(name = "Places", description = "Address autocomplete and place details")
+@Tag(name = "Places", description = "Address search using self-hosted Nominatim")
 public class PlacesResource {
     
     @Inject
     NominatimService nominatimService;
     
     /**
-     * GET /api/v1/places/autocomplete?input=police&country=ng
-     * Get address autocomplete suggestions using OpenStreetMap
+     * GET /api/v1/places/autocomplete?input=wuse
+     * Address autocomplete for user input
+     * 
+     * Frontend should:
+     * - Debounce input (300ms delay after typing stops)
+     * - Show loading indicator
+     * - Display results in dropdown
      */
     @GET
     @Path("/autocomplete")
     @PermitAll
     @Operation(
-        summary = "Get address suggestions (FREE - OpenStreetMap)",
-        description = "Autocomplete address search using Nominatim (no API key required)"
+        summary = "Address autocomplete",
+        description = "Search for Nigerian addresses as user types. Self-hosted, no API key required."
     )
     public Response getAutocompleteSuggestions(
             @QueryParam("input") @DefaultValue("") String input,
-            @QueryParam("country") @DefaultValue("ng") String country,
             @QueryParam("limit") @DefaultValue("10") int limit) {
         
         if (input.trim().isEmpty()) {
             return Response.ok(List.of()).build();
         }
         
-        List<PlaceSuggestion> suggestions = nominatimService.searchPlaces(
-            input,
-            country,
-            limit
-        );
+        // Minimum 2 characters to search
+        if (input.trim().length() < 2) {
+            return Response.ok(List.of()).build();
+        }
+        
+        List<PlaceSuggestion> suggestions = nominatimService.searchPlaces(input, limit);
         
         return Response.ok(suggestions).build();
     }
     
     /**
-     * GET /api/v1/places/details/{osmId}?type=way
-     * Get detailed information about a place using OSM ID
-     */
-    @GET
-    @Path("/details/{osmId}")
-    @PermitAll
-    @Operation(
-        summary = "Get place details (FREE - OpenStreetMap)",
-        description = "Get coordinates and full address for an OpenStreetMap ID"
-    )
-    public Response getPlaceDetails(
-            @PathParam("osmId") String osmId,
-            @QueryParam("type") @DefaultValue("way") String osmType) {
-        
-        PlaceDetails details = nominatimService.getPlaceDetails(osmId, osmType);
-        
-        if (details == null) {
-            return Response.status(Response.Status.NOT_FOUND)
-                    .entity(new ErrorResponse("Place not found"))
-                    .build();
-        }
-        
-        return Response.ok(details).build();
-    }
-    
-    /**
      * GET /api/v1/places/reverse-geocode?lat=9.0765&lng=7.3986
-     * Convert coordinates to address (reverse geocoding) using OpenStreetMap
+     * Convert GPS coordinates to human-readable address
+     * 
+     * Frontend should:
+     * - Call this after getting GPS coordinates
+     * - Display the formatted address to user
+     * - Save coordinates + formatted address to backend
      */
     @GET
     @Path("/reverse-geocode")
     @PermitAll
     @Operation(
-        summary = "Reverse geocode coordinates (FREE - OpenStreetMap)",
-        description = "Convert latitude/longitude to a human-readable address using Nominatim"
+        summary = "Reverse geocode GPS coordinates",
+        description = "Convert latitude/longitude to a readable address using self-hosted Nominatim"
     )
     public Response reverseGeocode(
             @QueryParam("lat") Double latitude,
@@ -120,6 +108,36 @@ public class PlacesResource {
         if (details == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(new ErrorResponse("No address found for these coordinates"))
+                    .build();
+        }
+        
+        return Response.ok(details).build();
+    }
+    
+    /**
+     * GET /api/v1/places/details/{osmId}?type=way
+     * Get detailed information about a selected place
+     * 
+     * Frontend should:
+     * - Call this when user selects an autocomplete suggestion
+     * - Extract precise coordinates and full address
+     */
+    @GET
+    @Path("/details/{osmId}")
+    @PermitAll
+    @Operation(
+        summary = "Get place details",
+        description = "Get full details for a selected place from autocomplete"
+    )
+    public Response getPlaceDetails(
+            @PathParam("osmId") String osmId,
+            @QueryParam("type") @DefaultValue("way") String osmType) {
+        
+        PlaceDetails details = nominatimService.getPlaceDetails(osmId, osmType);
+        
+        if (details == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(new ErrorResponse("Place not found"))
                     .build();
         }
         

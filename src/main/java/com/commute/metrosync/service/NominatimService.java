@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -16,19 +17,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * FREE Geocoding Service using OpenStreetMap Nominatim
- * NO API KEY REQUIRED! 🎉
+ * Self-Hosted Nominatim Geocoding Service
+ * Uses local Docker instance for fast, free geocoding
  * 
  * Features:
  * - Address search (autocomplete)
  * - Reverse geocoding (coordinates → address)
- * - Completely free and open source
+ * - Nigeria-only data for performance
  */
 @ApplicationScoped
 public class NominatimService {
     
-    private static final String NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org";
-    private static final String USER_AGENT = "MetroSyncApp/1.0"; // Required by Nominatim
+    @ConfigProperty(name = "nominatim.base.url", defaultValue = "http://localhost:8080")
+    String nominatimBaseUrl;
+    
+    private static final String USER_AGENT = "MetroSyncApp/1.0";
     
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -42,15 +45,15 @@ public class NominatimService {
     
     /**
      * Search for places/addresses (Autocomplete)
+     * Optimized for Nigerian addresses
      * 
-     * @param query Search text (e.g., "police station abuja")
-     * @param country Country code to limit results (e.g., "ng" for Nigeria)
+     * @param query Search text (e.g., "wuse abuja")
      * @param limit Maximum number of results (default: 10)
      * @return List of place suggestions
      */
-    public List<PlaceSuggestion> searchPlaces(String query, String country, int limit) {
+    public List<PlaceSuggestion> searchPlaces(String query, int limit) {
         try {
-            String url = buildSearchUrl(query, country, limit);
+            String url = buildSearchUrl(query, limit);
             
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -82,7 +85,7 @@ public class NominatimService {
      * 
      * @param latitude Latitude
      * @param longitude Longitude
-     * @return Place details with address
+     * @return Place details with formatted address
      */
     public PlaceDetails reverseGeocode(double latitude, double longitude) {
         try {
@@ -151,28 +154,26 @@ public class NominatimService {
     
     // ==================== URL BUILDERS ====================
     
-    private String buildSearchUrl(String query, String country, int limit) {
-        StringBuilder url = new StringBuilder(NOMINATIM_BASE_URL + "/search?");
+    private String buildSearchUrl(String query, int limit) {
+        StringBuilder url = new StringBuilder(nominatimBaseUrl + "/search?");
         url.append("q=").append(URLEncoder.encode(query, StandardCharsets.UTF_8));
         url.append("&format=json");
         url.append("&addressdetails=1");
         url.append("&limit=").append(limit);
-        
-        if (country != null && !country.isEmpty()) {
-            url.append("&countrycodes=").append(country);
-        }
+        url.append("&countrycodes=ng"); // Nigeria only
+        url.append("&dedupe=1"); // Remove duplicates
         
         return url.toString();
     }
     
     private String buildReverseUrl(double latitude, double longitude) {
-        return String.format("%s/reverse?lat=%s&lon=%s&format=json&addressdetails=1",
-            NOMINATIM_BASE_URL, latitude, longitude);
+        return String.format("%s/reverse?lat=%s&lon=%s&format=json&addressdetails=1&zoom=18",
+            nominatimBaseUrl, latitude, longitude);
     }
     
     private String buildLookupUrl(String osmId, String osmType) {
         return String.format("%s/lookup?osm_ids=%s%s&format=json&addressdetails=1",
-            NOMINATIM_BASE_URL, osmType.toUpperCase().charAt(0), osmId);
+            nominatimBaseUrl, osmType.toUpperCase().charAt(0), osmId);
     }
     
     // ==================== PARSERS ====================
@@ -188,12 +189,11 @@ public class NominatimService {
                     String displayName = result.get("display_name").asText();
                     
                     // Extract main text (name or road)
-                    String mainText = displayName.split(",")[0].trim();
+                    JsonNode address = result.get("address");
+                    String mainText = extractMainText(address, displayName);
                     
-                    // Extract secondary text (rest of address)
-                    String secondaryText = displayName.contains(",") 
-                        ? displayName.substring(displayName.indexOf(",") + 1).trim()
-                        : "";
+                    // Extract secondary text (district, state)
+                    String secondaryText = extractSecondaryText(address);
                     
                     double lat = result.get("lat").asDouble();
                     double lon = result.get("lon").asDouble();
@@ -232,19 +232,10 @@ public class NominatimService {
             }
             
             String displayName = result.get("display_name").asText();
+            JsonNode address = result.get("address");
             
-            // Extract name from address components
-            String name = displayName;
-            if (result.has("address")) {
-                JsonNode address = result.get("address");
-                if (address.has("road")) {
-                    name = address.get("road").asText();
-                } else if (address.has("suburb")) {
-                    name = address.get("suburb").asText();
-                } else if (address.has("neighbourhood")) {
-                    name = address.get("neighbourhood").asText();
-                }
-            }
+            // Extract structured address
+            String name = extractMainText(address, displayName);
             
             return new PlaceDetails(
                 name,
@@ -286,6 +277,68 @@ public class NominatimService {
             Log.error("Failed to parse lookup result", e);
             return null;
         }
+    }
+    
+    // ==================== HELPER METHODS ====================
+    
+    /**
+     * Extract main text from address (most specific location)
+     */
+    private String extractMainText(JsonNode address, String displayName) {
+        if (address == null) {
+            return displayName.split(",")[0].trim();
+        }
+        
+        // Priority order for main text
+        if (address.has("house_number") && address.has("road")) {
+            return address.get("house_number").asText() + " " + address.get("road").asText();
+        }
+        if (address.has("road")) {
+            return address.get("road").asText();
+        }
+        if (address.has("suburb")) {
+            return address.get("suburb").asText();
+        }
+        if (address.has("neighbourhood")) {
+            return address.get("neighbourhood").asText();
+        }
+        if (address.has("quarter")) {
+            return address.get("quarter").asText();
+        }
+        
+        return displayName.split(",")[0].trim();
+    }
+    
+    /**
+     * Extract secondary text (district, state, country)
+     */
+    private String extractSecondaryText(JsonNode address) {
+        if (address == null) {
+            return "";
+        }
+        
+        List<String> parts = new ArrayList<>();
+        
+        if (address.has("suburb") && !address.has("road")) {
+            // If suburb is not already in main text
+            if (address.has("city")) {
+                parts.add(address.get("city").asText());
+            }
+        } else if (address.has("suburb")) {
+            parts.add(address.get("suburb").asText());
+        }
+        
+        if (address.has("city_district")) {
+            parts.add(address.get("city_district").asText());
+        } else if (address.has("city")) {
+            parts.add(address.get("city").asText());
+        }
+        
+        if (address.has("state")) {
+            parts.add(address.get("state").asText());
+        }
+        
+        return String.join(", ", parts);
     }
     
     // ==================== DTOs ====================
