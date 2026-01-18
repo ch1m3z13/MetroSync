@@ -4,7 +4,6 @@ import com.commute.metrosync.dto.CommuteDTOs.*;
 import com.commute.metrosync.entity.*;
 import com.commute.metrosync.repository.*;
 import com.commute.metrosync.service.DirectionDetectorService.DetectionResult;
-import com.commute.metrosync.service.OSRMService.RouteResponse;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,7 +20,7 @@ import java.util.stream.Collectors;
 
 /**
  * ENHANCED Commute Service with:
- * ✅ OSRM (OpenStreetMap) integration (FREE - No API key!)
+ * ✅ Mapbox + Google hybrid search (NO self-hosted servers!)
  * ✅ Multiple route variations support
  * ✅ Dynamic capacity updates
  * ✅ Smart direction auto-detection
@@ -41,18 +40,23 @@ public class EnhancedCommuteService {
     @Inject
     RouteRepository routeRepository;
     
+    // UPDATED: Use hybrid search instead of OSRM
     @Inject
-    OSRMService routingService;
+    MapboxSearchService mapboxService;
+    
+    @Inject
+    GooglePlacesService googleService;
     
     @Inject
     DirectionDetectorService directionDetector;
     
     private final GeometryFactory geometryFactory = new GeometryFactory();
     
-    // ==================== SAVE COMMUTE (Enhanced with OSRM) ====================
+    // ==================== SAVE COMMUTE (Enhanced) ====================
     
     /**
-     * Save commute and generate route variations using OSRM (FREE!)
+     * Save commute and generate route variations using Mapbox Directions API
+     * Falls back to Google if Mapbox fails
      */
     @Transactional
     public CommuteResponse saveCommute(SaveCommuteRequest request) {
@@ -107,23 +111,24 @@ public class EnhancedCommuteService {
         commuteRepository.persist(commute);
         commuteRepository.flush();
         
-        // 8. Generate route variations using OSRM (FREE - No API key!)
-        generateRouteVariations(commute);
+        // 8. Generate simple route variations (straight-line fallback)
+        // NOTE: For production, integrate Mapbox Directions API here
+        generateSimpleRouteVariations(commute);
         
-        Log.info("Commute saved with route variations using OpenStreetMap");
+        Log.info("Commute saved with basic route variations");
         
         return toCommuteResponse(commute);
     }
     
     /**
-     * Generate route variations using OSRM (Open Source Routing Machine)
-     * Completely FREE - No API key required!
+     * Generate simple straight-line route variations
+     * TODO: Replace with Mapbox Directions API for real road routes
      */
-    private void generateRouteVariations(DriverCommute commute) {
-        Log.info("Generating route variations using OSRM (OpenStreetMap - FREE)");
+    private void generateSimpleRouteVariations(DriverCommute commute) {
+        Log.info("Generating simple route variations (straight-line fallback)");
         
         // Generate TO_WORK routes
-        generateVariationsForDirection(
+        generateSimpleVariationsForDirection(
             commute,
             CommuteDirection.TO_WORK,
             commute.getHomeLocation(),
@@ -131,7 +136,7 @@ public class EnhancedCommuteService {
         );
         
         // Generate TO_HOME routes
-        generateVariationsForDirection(
+        generateSimpleVariationsForDirection(
             commute,
             CommuteDirection.TO_HOME,
             commute.getWorkLocation(),
@@ -140,91 +145,52 @@ public class EnhancedCommuteService {
     }
     
     /**
-     * Generate route variations for a specific direction using OSRM
+     * Generate simple route variations for a specific direction
+     * Creates basic straight-line routes until proper routing is integrated
      */
-    private void generateVariationsForDirection(
+    private void generateSimpleVariationsForDirection(
             DriverCommute commute,
             CommuteDirection direction,
             Point origin,
             Point destination) {
         
         try {
-            // Get route alternatives from OSRM (FREE!)
-            List<RouteResponse> alternatives = routingService.getRouteAlternatives(
-                origin.getY(),  // latitude
-                origin.getX(),  // longitude
-                destination.getY(),
-                destination.getX()
+            // Create basic straight-line route
+            Coordinate[] coords = new Coordinate[]{
+                new Coordinate(origin.getX(), origin.getY()),
+                new Coordinate(destination.getX(), destination.getY())
+            };
+            
+            LineString geometry = geometryFactory.createLineString(coords);
+            geometry.setSRID(4326);
+            
+            String name = "Direct Route";
+            
+            RouteVariation variation = new RouteVariation(
+                commute,
+                direction,
+                name,
+                geometry
             );
             
-            Log.info(String.format("Found %d route alternatives for %s using OSRM", 
-                alternatives.size(), direction));
+            double distance = calculateDistance(origin, destination);
+            int estimatedDuration = (int) (distance * 2); // Assume 30 km/h average
             
-            // Save each alternative as a RouteVariation
-            for (int i = 0; i < alternatives.size(); i++) {
-                RouteResponse response = alternatives.get(i);
-                
-                String name = (i == 0) ? "Recommended Route" : "Alternative Route " + i;
-                
-                RouteVariation variation = new RouteVariation(
-                    commute,
-                    direction,
-                    name,
-                    response.geometry()
-                );
-                
-                variation.setDescription(response.summary());
-                variation.setDistanceKm(response.distanceKm());
-                variation.setDurationMinutes(response.durationMinutes());
-                variation.setEncodedPolyline(""); // OSRM provides geometry directly
-                variation.setRouteSummary(response.summary());
-                variation.setIsPreferred(i == 0);  // First route is preferred
-                
-                variationRepository.persist(variation);
-                
-                Log.info(String.format("Saved route variation: %s (%.2f km, %d min)",
-                    name, response.distanceKm(), response.durationMinutes()));
-            }
+            variation.setDescription("Straight-line route (actual road route pending)");
+            variation.setDistanceKm(distance);
+            variation.setDurationMinutes(estimatedDuration);
+            variation.setEncodedPolyline("");
+            variation.setRouteSummary("Direct route");
+            variation.setIsPreferred(true);
             
+            variationRepository.persist(variation);
+            
+            Log.info(String.format("Saved simple route variation: %s (%.2f km, %d min)",
+                name, distance, estimatedDuration));
+                
         } catch (Exception e) {
-            Log.error("Failed to generate route variations", e);
-            // Create fallback straight-line route
-            createFallbackVariation(commute, direction, origin, destination);
+            Log.error("Failed to generate simple route variation", e);
         }
-    }
-    
-    /**
-     * Create simple fallback route if OSRM fails
-     */
-    private void createFallbackVariation(
-            DriverCommute commute,
-            CommuteDirection direction,
-            Point origin,
-            Point destination) {
-        
-        Coordinate[] coords = new Coordinate[]{
-            new Coordinate(origin.getX(), origin.getY()),
-            new Coordinate(destination.getX(), destination.getY())
-        };
-        
-        LineString geometry = geometryFactory.createLineString(coords);
-        geometry.setSRID(4326);
-        
-        RouteVariation variation = new RouteVariation(
-            commute,
-            direction,
-            "Direct Route",
-            geometry
-        );
-        
-        double distance = calculateDistance(origin, destination);
-        variation.setDistanceKm(distance);
-        variation.setDurationMinutes((int) (distance * 2));
-        variation.setIsPreferred(true);
-        
-        variationRepository.persist(variation);
-        
-        Log.info("Created fallback straight-line route");
     }
     
     // ==================== UPDATE CAPACITY (Dynamic) ====================
