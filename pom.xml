@@ -1,68 +1,145 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0           http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    
     <modelVersion>4.0.0</modelVersion>
-
-    <groupId>com.commute.metrosync</groupId>
-    <artifactId>commuter-network</artifactId>
+    
+    <!-- ==================== PROJECT METADATA ==================== -->
+    <groupId>com.commute</groupId>
+    <artifactId>metrosync</artifactId>
     <version>1.0.0-SNAPSHOT</version>
-
+    <packaging>jar</packaging>
+    
+    <name>MetroSync</name>
+    <description>Intelligent carpooling platform with corridor-based route matching</description>
+    
+    <!-- ==================== PROPERTIES ==================== -->
     <properties>
-        <compiler-plugin.version>3.11.0</compiler-plugin.version>
+        <!-- Java & Encoding -->
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        
+        <!-- Quarkus Platform -->
+        <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
+        <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
         <quarkus.platform.version>3.15.1</quarkus.platform.version>
+        
+        <!-- Plugin Versions -->
+        <compiler-plugin.version>3.13.0</compiler-plugin.version>
+        <surefire-plugin.version>3.5.0</surefire-plugin.version>
+        <failsafe-plugin.version>3.5.0</failsafe-plugin.version>
+        
+        <!-- Dependency Versions -->
         <hibernate-spatial.version>6.4.4.Final</hibernate-spatial.version>
+        <jts.version>1.19.0</jts.version>
+        <jts2geojson.version>0.18.1</jts2geojson.version>
+        <testcontainers.version>1.19.7</testcontainers.version>
+        
+        <!-- Test Configuration -->
+        <skipITs>true</skipITs>
     </properties>
-
+    
+    <!-- ==================== DEPENDENCY MANAGEMENT ==================== -->
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>io.quarkus.platform</groupId>
-                <artifactId>quarkus-bom</artifactId>
+                <groupId>${quarkus.platform.group-id}</groupId>
+                <artifactId>${quarkus.platform.artifact-id}</artifactId>
                 <version>${quarkus.platform.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
-
+    
+    <!-- ==================== DEPENDENCIES ==================== -->
     <dependencies>
-        <!-- Jakarta EE Core Standards -->
+        
+        <!-- ==================== CORE QUARKUS ==================== -->
+        
+        <!-- CDI (Contexts and Dependency Injection) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        
+        <!-- REST API (Jackson JSON) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest-jackson</artifactId>
         </dependency>
+        
+        <!-- Legacy REST support (for compatibility) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-resteasy-reactive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-resteasy-reactive-jackson</artifactId>
+        </dependency>
+        
+        <!-- ==================== DATABASE ==================== -->
+        
+        <!-- Hibernate ORM with Panache -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-hibernate-orm-panache</artifactId>
         </dependency>
+        
+        <!-- PostgreSQL Driver -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-jdbc-postgresql</artifactId>
         </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-arc</artifactId> <!-- CDI -->
-        </dependency>
-
+        
+        <!-- Flyway for Database Migrations -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-flyway</artifactId>
         </dependency>
+        
+        <!-- Hibernate Spatial for PostGIS -->
         <dependency>
-            <groupId>jakarta.enterprise</groupId>
-            <artifactId>jakarta.enterprise.cdi-api</artifactId>
-            <version>4.0.1</version> <!-- Use 3.0.0 for Jakarta EE 9 -->
-            <scope>provided</scope>
+            <groupId>org.hibernate.orm</groupId>
+            <artifactId>hibernate-spatial</artifactId>
+            <version>${hibernate-spatial.version}</version>
         </dependency>
-
-        <!-- Password hashing -->
+        
+        <!-- Narayana JTA for Transactions -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-narayana-jta</artifactId>
+        </dependency>
+        
+        <!-- ==================== GEOSPATIAL LIBRARIES ==================== -->
+        
+        <!-- JTS Topology Suite (Core Geospatial) -->
+        <dependency>
+            <groupId>org.locationtech.jts</groupId>
+            <artifactId>jts-core</artifactId>
+            <version>${jts.version}</version>
+        </dependency>
+        
+        <!-- GeoJSON Support -->
+        <dependency>
+            <groupId>org.wololo</groupId>
+            <artifactId>jts2geojson</artifactId>
+            <version>${jts2geojson.version}</version>
+        </dependency>
+        
+        <!-- ==================== SECURITY & AUTH ==================== -->
+        
+        <!-- Password Hashing (Elytron) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-elytron-security-common</artifactId>
         </dependency>
-    
-        <!-- JWT tokens -->
+        
+        <!-- JWT (SmallRye) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-jwt</artifactId>
@@ -71,98 +148,112 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-jwt-build</artifactId>
         </dependency>
-
-        <!-- Hibernate Spatial for PostGIS -->
-        <dependency>
-            <groupId>org.hibernate.orm</groupId>
-            <artifactId>hibernate-spatial</artifactId>
-            <version>${hibernate-spatial.version}</version>
-        </dependency>
         
-        <!-- JTS Topology Suite (Geospatial library) -->
-        <dependency>
-            <groupId>org.locationtech.jts</groupId>
-            <artifactId>jts-core</artifactId>
-            <version>1.19.0</version>
-        </dependency>
-
-        <!-- Jakarta Security -->
+        <!-- JPA Security Integration -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-security-jpa</artifactId>
         </dependency>
-
-        <!-- Jakarta Validation -->
+        
+        <!-- ==================== VALIDATION ==================== -->
+        
+        <!-- Bean Validation (Hibernate Validator) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-hibernate-validator</artifactId>
         </dependency>
-
-        <!-- Jakarta Transaction -->
+        
+        <!-- Jakarta Enterprise CDI API (for @Inject) -->
+        <dependency>
+            <groupId>jakarta.enterprise</groupId>
+            <artifactId>jakarta.enterprise.cdi-api</artifactId>
+            <version>4.0.1</version>
+            <scope>provided</scope>
+        </dependency>
+        
+        <!-- ==================== REAL-TIME & ASYNC ==================== -->
+        
+        <!-- WebSockets for Real-Time Tracking -->
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-narayana-jta</artifactId>
+            <artifactId>quarkus-websockets</artifactId>
         </dependency>
-
-        <!-- OpenAPI/Swagger -->
+        
+        <!-- Scheduler for Background Jobs -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-scheduler</artifactId>
+        </dependency>
+        
+        <!-- ==================== MONITORING & OBSERVABILITY ==================== -->
+        
+        <!-- OpenAPI/Swagger Documentation -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-openapi</artifactId>
         </dependency>
-
+        
         <!-- Health Checks -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-health</artifactId>
         </dependency>
-
-        <!-- Metrics -->
+        
+        <!-- Prometheus Metrics -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
         </dependency>
-
-        <!-- Scheduler for background jobs -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-scheduler</artifactId>
-        </dependency>
-
-        <!-- Logging -->
+        
+        <!-- JSON Logging -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-logging-json</artifactId>
         </dependency>
-
-        <!-- Testing -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-websockets</artifactId>
-        </dependency>
+        
+        <!-- ==================== TESTING ==================== -->
+        
+        <!-- JUnit 5 -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+        
+        <!-- REST Assured for API Testing -->
         <dependency>
             <groupId>io.rest-assured</groupId>
             <artifactId>rest-assured</artifactId>
             <scope>test</scope>
         </dependency>
+        
+        <!-- Quarkus Test Security -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-test-security</artifactId>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Testcontainers for PostgreSQL -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
-            <version>1.19.7</version>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
+        
     </dependencies>
-
+    
+    <!-- ==================== BUILD CONFIGURATION ==================== -->
     <build>
         <plugins>
+            
+            <!-- Quarkus Maven Plugin -->
             <plugin>
-                <groupId>io.quarkus.platform</groupId>
+                <groupId>${quarkus.platform.group-id}</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
                 <version>${quarkus.platform.version}</version>
+                <extensions>true</extensions>
                 <executions>
                     <execution>
                         <goals>
@@ -173,6 +264,8 @@
                     </execution>
                 </executions>
             </plugin>
+            
+            <!-- Maven Compiler Plugin -->
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${compiler-plugin.version}</version>
@@ -182,9 +275,11 @@
                     </compilerArgs>
                 </configuration>
             </plugin>
+            
+            <!-- Maven Surefire (Unit Tests) -->
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.2.5</version>
+                <version>${surefire-plugin.version}</version>
                 <configuration>
                     <systemPropertyVariables>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
@@ -192,9 +287,11 @@
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
+            
+            <!-- Maven Failsafe (Integration Tests) -->
             <plugin>
                 <artifactId>maven-failsafe-plugin</artifactId>
-                <version>3.2.5</version>
+                <version>${failsafe-plugin.version}</version>
                 <executions>
                     <execution>
                         <goals>
@@ -205,11 +302,41 @@
                 </executions>
                 <configuration>
                     <systemPropertyVariables>
+                        <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                         <maven.home>${maven.home}</maven.home>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
+            
         </plugins>
     </build>
+    
+    <!-- ==================== PROFILES ==================== -->
+    <profiles>
+        
+        <!-- Native Build Profile -->
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>native</name>
+                </property>
+            </activation>
+            <properties>
+                <skipITs>false</skipITs>
+                <quarkus.package.type>native</quarkus.package.type>
+            </properties>
+        </profile>
+        
+        <!-- Production Profile -->
+        <profile>
+            <id>production</id>
+            <properties>
+                <quarkus.package.type>uber-jar</quarkus.package.type>
+            </properties>
+        </profile>
+        
+    </profiles>
+    
 </project>
