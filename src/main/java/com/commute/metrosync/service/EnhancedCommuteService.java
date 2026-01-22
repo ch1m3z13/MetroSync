@@ -4,6 +4,7 @@ import com.commute.metrosync.dto.CommuteDTOs.*;
 import com.commute.metrosync.entity.*;
 import com.commute.metrosync.repository.*;
 import com.commute.metrosync.service.DirectionDetectorService.DetectionResult;
+import com.commute.metrosync.service.MapboxDirectionsService.RouteAlternative;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -19,11 +20,13 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * ENHANCED Commute Service with:
- * ✅ Mapbox + Google hybrid search (NO self-hosted servers!)
- * ✅ Multiple route variations support
- * ✅ Dynamic capacity updates
- * ✅ Smart direction auto-detection
+ * PRODUCTION-READY Commute Service with REAL Mapbox Integration
+ * * Changes from Previous Version:
+ * ✅ Uses MapboxDirectionsService for REAL road routes
+ * ✅ Generates actual route variations (not straight lines)
+ * ✅ Provides encoded polylines for map display
+ * ✅ Handles API failures gracefully
+ * ✅ FIXED: Handles duplicate key constraints by deactivating old routes
  */
 @ApplicationScoped
 public class EnhancedCommuteService {
@@ -40,27 +43,28 @@ public class EnhancedCommuteService {
     @Inject
     RouteRepository routeRepository;
     
-    // UPDATED: Use hybrid search instead of OSRM
     @Inject
-    MapboxSearchService mapboxService;
-    
-    @Inject
-    GooglePlacesService googleService;
+    MapboxDirectionsService mapboxDirections;  // ✅ NEW: Real routing service
     
     @Inject
     DirectionDetectorService directionDetector;
     
     private final GeometryFactory geometryFactory = new GeometryFactory();
     
-    // ==================== SAVE COMMUTE (Enhanced) ====================
+    // ==================== SAVE COMMUTE (NOW WITH REAL ROUTING!) ====================
     
     /**
-     * Save commute and generate route variations using Mapbox Directions API
-     * Falls back to Google if Mapbox fails
+     * Save commute and generate REAL route variations using Mapbox Directions API
+     * * Flow:
+     * 1. Save commute information
+     * 2. Deactivate OLD routes to prevent DB conflicts
+     * 3. Call Mapbox Directions API for TO_WORK routes
+     * 4. Call Mapbox Directions API for TO_HOME routes
+     * 5. Save all variations to database
      */
     @Transactional
     public CommuteResponse saveCommute(SaveCommuteRequest request) {
-        Log.info("Saving enhanced commute for driver: " + request.driverId());
+        Log.info("Saving enhanced commute with REAL route generation for driver: " + request.driverId());
         
         // 1. Validate driver
         UUID driverId = UUID.fromString(request.driverId());
@@ -103,112 +107,237 @@ public class EnhancedCommuteService {
             commute.setCapacity(request.capacity());
         }
         
-        // 6. Calculate straight-line distance (fallback)
+        // 6. Calculate straight-line distance (for reference)
         double distanceKm = calculateDistance(homeLocation, workLocation);
         commute.setCommuteDistanceKm(distanceKm);
         
         // 7. Save commute first
+        commute.setIsActive(true);
         commuteRepository.persist(commute);
-        commuteRepository.flush();
+        commuteRepository.flush(); // Ensure ID is generated
         
-        // 8. Generate simple route variations (straight-line fallback)
-        // NOTE: For production, integrate Mapbox Directions API here
-        generateSimpleRouteVariations(commute);
+        // 8. ✅ CRITICAL FIX: Deactivate OLD routes before generating new ones
+        // This prevents "duplicate key value violates unique constraint" error
+        deactivateOldRoutes(commute.getId());
         
-        Log.info("Commute saved with basic route variations");
+        // 9. ✅ GENERATE REAL ROUTE VARIATIONS using Mapbox
+        generateRealRouteVariations(commute);
+        
+        Log.info("Commute saved with REAL route variations from Mapbox");
         
         return toCommuteResponse(commute);
     }
-    
+
     /**
-     * Generate simple straight-line route variations
-     * TODO: Replace with Mapbox Directions API for real road routes
+     * Sets is_active = false for all existing routes of this commute.
+     * This ensures the unique index (commute_id, direction) WHERE is_preferred=true
+     * does not conflict with the new routes we are about to insert.
      */
-    private void generateSimpleRouteVariations(DriverCommute commute) {
-        Log.info("Generating simple route variations (straight-line fallback)");
+    private void deactivateOldRoutes(UUID commuteId) {
+        // We set isPreferred = false explicitly to free up the unique index
+        // and isActive = false to mark them as historical
+        variationRepository.update("isActive = false, isPreferred = false WHERE commute.id = ?1", commuteId);
         
-        // Generate TO_WORK routes
-        generateSimpleVariationsForDirection(
-            commute,
-            CommuteDirection.TO_WORK,
-            commute.getHomeLocation(),
-            commute.getWorkLocation()
-        );
-        
-        // Generate TO_HOME routes
-        generateSimpleVariationsForDirection(
-            commute,
-            CommuteDirection.TO_HOME,
-            commute.getWorkLocation(),
-            commute.getHomeLocation()
-        );
+        // Force flush to ensure DB sees the update before we try inserting new active ones
+        variationRepository.flush(); 
     }
     
     /**
-     * Generate simple route variations for a specific direction
-     * Creates basic straight-line routes until proper routing is integrated
+     * ✅ NEW: Generate REAL route variations using Mapbox Directions API
      */
-    private void generateSimpleVariationsForDirection(
-            DriverCommute commute,
-            CommuteDirection direction,
-            Point origin,
-            Point destination) {
+    private void generateRealRouteVariations(DriverCommute commute) {
+        Log.info("Generating REAL route variations using Mapbox Directions API");
         
         try {
-            // Create basic straight-line route
+            // Generate TO_WORK routes (Home → Work)
+            generateVariationsForDirection(
+                commute,
+                CommuteDirection.TO_WORK,
+                commute.getHomeLocation().getY(),  // latitude
+                commute.getHomeLocation().getX(),  // longitude
+                commute.getWorkLocation().getY(),
+                commute.getWorkLocation().getX()
+            );
+            
+            // Generate TO_HOME routes (Work → Home)
+            generateVariationsForDirection(
+                commute,
+                CommuteDirection.TO_HOME,
+                commute.getWorkLocation().getY(),
+                commute.getWorkLocation().getX(),
+                commute.getHomeLocation().getY(),
+                commute.getHomeLocation().getX()
+            );
+            
+            Log.info("Successfully generated route variations with Mapbox");
+            
+        } catch (Exception e) {
+            Log.error("Failed to generate route variations, using fallback", e);
+            
+            // Fallback: Generate simple straight-line routes
+            generateSimpleRouteVariations(commute);
+        }
+    }
+    
+    /**
+     * Generate route variations for a specific direction using Mapbox
+     */
+    private void generateVariationsForDirection(
+            DriverCommute commute,
+            CommuteDirection direction,
+            double originLat,
+            double originLon,
+            double destLat,
+            double destLon) {
+        
+        try {
+            Log.info(String.format(
+                "Fetching %s routes from (%.6f, %.6f) to (%.6f, %.6f)",
+                direction, originLat, originLon, destLat, destLon
+            ));
+            
+            // ✅ Call Mapbox Directions API
+            List<RouteAlternative> alternatives = mapboxDirections.getRouteAlternatives(
+                originLat, originLon, destLat, destLon
+            );
+            
+            if (alternatives.isEmpty()) {
+                Log.warn("Mapbox returned no routes, using fallback");
+                generateFallbackVariation(commute, direction, originLat, originLon, destLat, destLon);
+                return;
+            }
+            
+            // Save each alternative to database
+            for (RouteAlternative alternative : alternatives) {
+                saveRouteVariation(commute, direction, alternative);
+            }
+            
+            Log.info(String.format("Saved %d route variations for %s", alternatives.size(), direction));
+            
+        } catch (Exception e) {
+            Log.error("Failed to fetch Mapbox routes for " + direction, e);
+            generateFallbackVariation(commute, direction, originLat, originLon, destLat, destLon);
+        }
+    }
+    
+    /**
+     * Save a route alternative to database
+     */
+    private void saveRouteVariation(
+            DriverCommute commute,
+            CommuteDirection direction,
+            RouteAlternative alternative) {
+        
+        RouteVariation variation = new RouteVariation(
+            commute,
+            direction,
+            alternative.name(),
+            alternative.geometry()
+        );
+        
+        variation.setDescription(alternative.description());
+        variation.setDistanceKm(alternative.distanceKm());
+        variation.setDurationMinutes(alternative.durationMinutes());
+        variation.setEncodedPolyline(alternative.encodedPolyline());
+        variation.setRouteSummary(alternative.routeSummary());
+        variation.setIsPreferred(alternative.isPreferred());
+        variation.setIsActive(true);
+        
+        variationRepository.persist(variation);
+        
+        Log.info(String.format(
+            "Saved route: %s (%.2f km, %d min, preferred: %s)",
+            alternative.name(),
+            alternative.distanceKm(),
+            alternative.durationMinutes(),
+            alternative.isPreferred()
+        ));
+    }
+    
+    /**
+     * Generate fallback straight-line route when Mapbox fails
+     */
+    private void generateFallbackVariation(
+            DriverCommute commute,
+            CommuteDirection direction,
+            double originLat,
+            double originLon,
+            double destLat,
+            double destLon) {
+        
+        try {
             Coordinate[] coords = new Coordinate[]{
-                new Coordinate(origin.getX(), origin.getY()),
-                new Coordinate(destination.getX(), destination.getY())
+                new Coordinate(originLon, originLat),
+                new Coordinate(destLon, destLat)
             };
             
             LineString geometry = geometryFactory.createLineString(coords);
             geometry.setSRID(4326);
             
-            String name = "Direct Route";
+            Point origin = createPoint(originLon, originLat);
+            Point dest = createPoint(destLon, destLat);
+            double distance = calculateDistance(origin, dest);
+            int estimatedDuration = (int) (distance * 2); // Assume 30 km/h
             
             RouteVariation variation = new RouteVariation(
                 commute,
                 direction,
-                name,
+                "Direct Route (Fallback)",
                 geometry
             );
             
-            double distance = calculateDistance(origin, destination);
-            int estimatedDuration = (int) (distance * 2); // Assume 30 km/h average
-            
-            variation.setDescription("Straight-line route (actual road route pending)");
+            variation.setDescription("Estimated route - actual path may vary");
             variation.setDistanceKm(distance);
             variation.setDurationMinutes(estimatedDuration);
-            variation.setEncodedPolyline("");
-            variation.setRouteSummary("Direct route");
+            variation.setEncodedPolyline(""); // No polyline for straight line
+            variation.setRouteSummary("Direct connection");
             variation.setIsPreferred(true);
+            variation.setIsActive(true);
             
             variationRepository.persist(variation);
             
-            Log.info(String.format("Saved simple route variation: %s (%.2f km, %d min)",
-                name, distance, estimatedDuration));
-                
+            Log.info("Saved fallback straight-line route");
+            
         } catch (Exception e) {
-            Log.error("Failed to generate simple route variation", e);
+            Log.error("Failed to create fallback route", e);
         }
     }
     
-    // ==================== UPDATE CAPACITY (Dynamic) ====================
-    
     /**
-     * Update driver's current capacity
-     * Allows drivers to adjust capacity on-the-fly
+     * Legacy fallback method (kept for compatibility)
      */
+    private void generateSimpleRouteVariations(DriverCommute commute) {
+        Log.info("Generating simple route variations (straight-line fallback)");
+        
+        generateFallbackVariation(
+            commute,
+            CommuteDirection.TO_WORK,
+            commute.getHomeLocation().getY(),
+            commute.getHomeLocation().getX(),
+            commute.getWorkLocation().getY(),
+            commute.getWorkLocation().getX()
+        );
+        
+        generateFallbackVariation(
+            commute,
+            CommuteDirection.TO_HOME,
+            commute.getWorkLocation().getY(),
+            commute.getWorkLocation().getX(),
+            commute.getHomeLocation().getY(),
+            commute.getHomeLocation().getX()
+        );
+    }
+    
+    // ==================== UPDATE CAPACITY ====================
+    
     @Transactional
     public CapacityUpdateResponse updateCapacity(UUID driverId, int newCapacity) {
         Log.info(String.format("Updating capacity for driver %s to %d", driverId, newCapacity));
         
-        // Validate capacity
         if (newCapacity < 1 || newCapacity > 20) {
             throw new IllegalArgumentException("Capacity must be between 1 and 20");
         }
         
-        // Get commute
         DriverCommute commute = commuteRepository.findByDriverId(driverId)
             .orElseThrow(() -> new IllegalArgumentException("No commute found for this driver"));
         
@@ -226,35 +355,26 @@ public class EnhancedCommuteService {
         );
     }
     
-    // ==================== ACTIVATE COMMUTE (Smart Direction Detection) ====================
+    // ==================== ACTIVATE COMMUTE ====================
     
-    /**
-     * Activate commute with smart direction auto-detection
-     */
     @Transactional
     public ActivateCommuteResponse activateCommuteAuto(UUID driverId) {
         Log.info("Activating commute with auto-detection for driver: " + driverId);
         
-        // Get driver and commute
         User driver = userRepository.findByIdOptional(driverId)
             .orElseThrow(() -> new IllegalArgumentException("Driver not found"));
         
         DriverCommute commute = commuteRepository.findByDriverId(driverId)
             .orElseThrow(() -> new IllegalArgumentException("No commute found"));
         
-        // Smart direction detection
         DetectionResult detection = directionDetector.detectDirection(commute, driver);
         
         Log.info(String.format("Detected direction: %s (confidence: %.2f) - %s",
             detection.direction(), detection.confidence(), detection.reason()));
         
-        // Activate with detected direction
         return activateCommute(driverId, detection.direction(), detection);
     }
     
-    /**
-     * Activate commute with manual direction
-     */
     @Transactional
     public ActivateCommuteResponse activateCommute(
             UUID driverId,
@@ -263,9 +383,6 @@ public class EnhancedCommuteService {
         return activateCommute(driverId, direction, null);
     }
     
-    /**
-     * Activate commute (internal method)
-     */
     private ActivateCommuteResponse activateCommute(
             UUID driverId,
             CommuteDirection direction,
@@ -274,15 +391,12 @@ public class EnhancedCommuteService {
         Log.info(String.format("Activating commute for driver %s, direction: %s",
             driverId, direction));
         
-        // Get commute
         DriverCommute commute = commuteRepository.findByDriverId(driverId)
             .orElseThrow(() -> new IllegalArgumentException("No commute found"));
         
-        // Get preferred route variation for this direction
         RouteVariation preferredVariation = variationRepository
             .findPreferredRoute(commute.getId(), direction)
             .orElseGet(() -> {
-                // Fallback: get any route for this direction
                 List<RouteVariation> variations = variationRepository
                     .findByCommuteIdAndDirection(commute.getId(), direction);
                 
@@ -324,9 +438,6 @@ public class EnhancedCommuteService {
         );
     }
     
-    /**
-     * Create Route entity from RouteVariation
-     */
     private Route createRouteFromVariation(RouteVariation variation, UUID driverId) {
         String routeName = String.format("%s (%s)",
             variation.getName(),
@@ -340,21 +451,16 @@ public class EnhancedCommuteService {
         route.setIsPublished(true);
         route.setMaxDeviationMeters(1000);
         
-        // Add virtual stops at start and end
         addVirtualStopsFromVariation(route, variation);
         
         return route;
     }
     
-    /**
-     * Add virtual stops to route
-     */
     private void addVirtualStopsFromVariation(Route route, RouteVariation variation) {
         Coordinate[] coords = variation.getGeometry().getCoordinates();
         
         if (coords.length < 2) return;
         
-        // Start stop
         Point startPoint = geometryFactory.createPoint(coords[0]);
         startPoint.setSRID(4326);
         
@@ -365,7 +471,6 @@ public class EnhancedCommuteService {
         startStop.setTimeOffsetMinutes(0);
         route.addVirtualStop(startStop);
         
-        // End stop
         Point endPoint = geometryFactory.createPoint(coords[coords.length - 1]);
         endPoint.setSRID(4326);
         
@@ -379,9 +484,6 @@ public class EnhancedCommuteService {
     
     // ==================== GET ROUTE VARIATIONS ====================
     
-    /**
-     * Get all route variations for a driver
-     */
     public List<RouteVariationDTO> getRouteVariations(UUID driverId) {
         DriverCommute commute = commuteRepository.findByDriverId(driverId)
             .orElseThrow(() -> new IllegalArgumentException("No commute found"));
@@ -393,9 +495,6 @@ public class EnhancedCommuteService {
             .collect(Collectors.toList());
     }
     
-    /**
-     * Select a route variation as preferred
-     */
     @Transactional
     public void selectPreferredRoute(UUID driverId, UUID variationId) {
         DriverCommute commute = commuteRepository.findByDriverId(driverId)
@@ -408,11 +507,15 @@ public class EnhancedCommuteService {
             throw new IllegalArgumentException("Route variation does not belong to this driver");
         }
         
-        variationRepository.setPreferred(
-            variationId,
-            commute.getId(),
-            variation.getDirection()
-        );
+        // Deactivate preferred status for other routes in same direction
+        // This is handled by a custom repository method or manual update
+        variationRepository.update("isPreferred = false WHERE commute.id = ?1 AND direction = ?2", 
+            commute.getId(), variation.getDirection());
+        variationRepository.flush(); // Ensure update is seen
+        
+        // Set new preferred
+        variation.setIsPreferred(true);
+        variationRepository.persist(variation);
         
         Log.info(String.format("Set preferred route: %s for %s",
             variation.getName(), variation.getDirection()));
@@ -461,25 +564,4 @@ public class EnhancedCommuteService {
             variation.getEncodedPolyline()
         );
     }
-    
-    // ==================== DTOs ====================
-    
-    public record CapacityUpdateResponse(
-        String driverId,
-        int newCapacity,
-        int oldCapacity,
-        String message
-    ) {}
-    
-    public record RouteVariationDTO(
-        String id,
-        String name,
-        String description,
-        String direction,
-        Double distanceKm,
-        Integer durationMinutes,
-        String routeSummary,
-        Boolean isPreferred,
-        String encodedPolyline
-    ) {}
 }
