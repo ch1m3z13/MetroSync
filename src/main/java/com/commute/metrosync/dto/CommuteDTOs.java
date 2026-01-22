@@ -103,4 +103,23 @@ public class CommuteDTOs {
     public record MessageResponse(
         String message
     ) {}
+
+    public record RouteVariationDTO(
+        String id,
+        String name,
+        String description,
+        String direction,
+        Double distanceKm,
+        Integer durationMinutes,
+        String routeSummary,
+        Boolean isPreferred,
+        String encodedPolyline
+    ) {}
+
+    public record CapacityUpdateResponse(
+        String driverId,
+        int newCapacity,
+        int oldCapacity,
+        String message
+    ) {}
 }
