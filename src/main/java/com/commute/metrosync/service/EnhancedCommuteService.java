@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
  * ✅ Provides encoded polylines for map display
  * ✅ Handles API failures gracefully
  * ✅ FIXED: Handles duplicate key constraints by deactivating old routes
+ * ✅ FIXED: Added missing inner DTO records
  */
 @ApplicationScoped
 public class EnhancedCommuteService {
@@ -564,4 +565,25 @@ public class EnhancedCommuteService {
             variation.getEncodedPolyline()
         );
     }
+
+    // ==================== MISSING INNER RECORDS ====================
+
+    public record CapacityUpdateResponse(
+        String driverId,
+        int newCapacity,
+        int oldCapacity,
+        String message
+    ) {}
+
+    public record RouteVariationDTO(
+        String id,
+        String name,
+        String description,
+        String direction,
+        double distanceKm,
+        int durationMinutes,
+        String routeSummary,
+        boolean isPreferred,
+        String encodedPolyline
+    ) {}
 }
