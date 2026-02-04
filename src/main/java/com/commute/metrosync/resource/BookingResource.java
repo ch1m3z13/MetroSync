@@ -1,309 +1,656 @@
 package com.commute.metrosync.resource;
 
-import jakarta.annotation.security.PermitAll;
+import com.commute.metrosync.dto.ErrorResponse;
+import com.commute.metrosync.entity.*;
+import com.commute.metrosync.repository.*;
+import io.quarkus.logging.Log;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.*;
-import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.SecurityContext;
-import com.commute.metrosync.entity.*;
-import com.commute.metrosync.repository.*;
-import com.commute.metrosync.service.BookingService;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Booking Management API
+ * 
+ * Endpoints:
+ * - POST /bookings: Create booking (PASSENGER only)
+ * - GET /bookings: List bookings (filtered by user role)
+ * - GET /bookings/:id: Get booking details
+ * - PATCH /bookings/:id: Update booking status
+ * - POST /bookings/:id/cancel: Cancel booking
+ */
 @Path("/bookings")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@Tag(name = "Bookings", description = "Ride booking and management")
+@Tag(name = "Bookings", description = "Booking management for passengers and drivers")
 public class BookingResource {
-    
-    @Inject
-    BookingService bookingService;
     
     @Inject
     BookingRepository bookingRepository;
     
+    @Inject
+    RouteRepository routeRepository;
+    
+    @Inject
+    UserRepository userRepository;
+    
+    @Inject
+    JsonWebToken jwt;
+    
+    private final GeometryFactory geometryFactory = new GeometryFactory();
+    
     /**
-     * Create a new booking (Rider only).
+     * POST /bookings
+     * Create a new booking
+     * 
+     * Authorization: PASSENGER role required
      */
     @POST
-    @RolesAllowed({"RIDER"})
-    @Operation(summary = "Create a new booking", description = "Request a ride on a specific route")
-    public Response createBooking(@Valid CreateBookingDTO request) {
+    @RolesAllowed({"PASSENGER"})
+    @Transactional
+    @Operation(
+        summary = "Create booking",
+        description = "Passenger creates a booking for a route"
+    )
+    public Response createBooking(@Valid CreateBookingRequest request) {
         try {
-            BookingService.CreateBookingRequest serviceRequest = 
-                new BookingService.CreateBookingRequest(
-                    request.riderId,
-                    request.routeId,
-                    request.pickupLatitude,
-                    request.pickupLongitude,
-                    request.dropoffLatitude,
-                    request.dropoffLongitude,
-                    request.scheduledPickupTime,
-                    request.passengerCount,
-                    request.specialInstructions
-                );
+            UUID passengerId = UUID.fromString(jwt.getSubject());
             
-            Booking booking = bookingService.createBooking(serviceRequest);
+            Log.info("Creating booking for passenger: " + passengerId);
+            
+            // Validate passenger
+            User passenger = userRepository.findByIdOptional(passengerId)
+                .orElseThrow(() -> new IllegalArgumentException("Passenger not found"));
+            
+            if (!passenger.isRider()) {
+                return Response.status(Response.Status.FORBIDDEN)
+                    .entity(new ErrorResponse("User does not have PASSENGER role"))
+                    .build();
+            }
+            
+            // Validate route exists and is active
+            UUID routeId = UUID.fromString(request.routeId());
+            Route route = routeRepository.findByIdOptional(routeId)
+                .orElseThrow(() -> new IllegalArgumentException("Route not found"));
+            
+            if (!route.getIsActive() || !route.getIsPublished()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse("Route is not available"))
+                    .build();
+            }
+            
+            // Check for duplicate active booking
+            long existingBookings = bookingRepository.count(
+                "rider.id = ?1 and route.id = ?2 and status in (?3, ?4, ?5)",
+                passengerId,
+                routeId,
+                BookingStatus.PENDING,
+                BookingStatus.CONFIRMED,
+                BookingStatus.IN_PROGRESS
+            );
+            
+            if (existingBookings > 0) {
+                return Response.status(Response.Status.CONFLICT)
+                    .entity(new ErrorResponse("You already have an active booking for this route"))
+                    .build();
+            }
+            
+            // Create geometry points for pickup and dropoff
+            Point pickupLocation = geometryFactory.createPoint(
+                new Coordinate(
+                    request.pickupLocation().longitude(),
+                    request.pickupLocation().latitude()
+                )
+            );
+            pickupLocation.setSRID(4326);
+            
+            Point dropoffLocation = geometryFactory.createPoint(
+                new Coordinate(
+                    request.dropoffLocation().longitude(),
+                    request.dropoffLocation().latitude()
+                )
+            );
+            dropoffLocation.setSRID(4326);
+            
+            // Validate pickup/dropoff are near route
+            boolean pickupNearRoute = routeRepository.isPointNearRoute(
+                routeId, pickupLocation, 500.0
+            );
+            boolean dropoffNearRoute = routeRepository.isPointNearRoute(
+                routeId, dropoffLocation, 500.0
+            );
+            
+            if (!pickupNearRoute || !dropoffNearRoute) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse("Pickup or dropoff location is too far from route"))
+                    .build();
+            }
+            
+            // Calculate fare (simplified - would use pricing service in production)
+            BigDecimal fare = calculateFare(route, pickupLocation, dropoffLocation);
+            
+            // Create booking
+            Booking booking = new Booking();
+            booking.setRider(passenger);
+            booking.setRoute(route);
+            booking.setPickupLocation(pickupLocation);
+            booking.setDropoffLocation(dropoffLocation);
+            booking.setScheduledPickupTime(LocalDateTime.now().plusHours(1)); // Default
+            booking.setFareAmount(fare);
+            booking.setPassengerCount(1);
+            booking.setStatus(BookingStatus.PENDING);
+            
+            bookingRepository.persist(booking);
+            bookingRepository.flush();
+            
+            Log.info("Booking created successfully: " + booking.getId());
+            
+            // Create response
+            BookingResponse response = toBookingResponse(booking);
+            
             return Response.status(Response.Status.CREATED)
-                    .entity(toDTO(booking))
-                    .build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
+                .entity(response)
+                .build();
+            
+        } catch (IllegalArgumentException e) {
+            Log.error("Invalid booking creation request", e);
             return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
-        }
-    }
-
-    @GET
-    @Path("/{bookingId}")
-    @RolesAllowed({"RIDER", "DRIVER"})
-    @Operation(summary = "Get booking details")
-    public Response getBooking(@PathParam("bookingId") UUID bookingId) {
-        Booking booking = bookingRepository.findById(bookingId);
-        
-    if (booking == null) {
-        return Response.status(Response.Status.NOT_FOUND).build();
-    }
-    
-    return Response.ok(toDTO(booking)).build();
-}
-    
-    /**
-     * Confirm a booking (Driver only).
-     */
-    @POST
-    @Path("/{bookingId}/confirm")
-    @RolesAllowed({"DRIVER"})
-    @Operation(summary = "Confirm a booking", description = "Driver confirms they will provide the ride")
-    public Response confirmBooking(
-            @PathParam("bookingId") UUID bookingId,
-            @Context SecurityContext securityContext) {
-        
-        try {
-            UUID driverId = getUserIdFromContext(securityContext);
-            Booking booking = bookingService.confirmBooking(bookingId, driverId);
-            return Response.ok(toDTO(booking)).build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            Log.error("Failed to create booking", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to create booking: " + e.getMessage()))
+                .build();
         }
     }
     
     /**
-     * Start a ride (Driver only).
-     */
-    @POST
-    @Path("/{bookingId}/start")
-    @RolesAllowed({"DRIVER"})
-    @Operation(summary = "Start a ride", description = "Mark that passenger has been picked up")
-    public Response startRide(
-            @PathParam("bookingId") UUID bookingId,
-            @Context SecurityContext securityContext) {
-        
-        try {
-            UUID driverId = getUserIdFromContext(securityContext);
-            Booking booking = bookingService.startRide(bookingId, driverId);
-            return Response.ok(toDTO(booking)).build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
-        }
-    }
-    
-    /**
-     * Complete a ride (Driver only).
-     */
-    @POST
-    @Path("/{bookingId}/complete")
-    @RolesAllowed({"DRIVER"})
-    @Operation(summary = "Complete a ride", description = "Mark that passenger has been dropped off")
-    public Response completeRide(
-            @PathParam("bookingId") UUID bookingId,
-            @Context SecurityContext securityContext) {
-        
-        try {
-            UUID driverId = getUserIdFromContext(securityContext);
-            Booking booking = bookingService.completeRide(bookingId, driverId);
-            return Response.ok(toDTO(booking)).build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
-        }
-    }
-    
-    /**
-     * Cancel a booking (Rider or Driver).
-     */
-    @POST
-    @Path("/{bookingId}/cancel")
-    @RolesAllowed({"RIDER", "DRIVER"})
-    @Operation(summary = "Cancel a booking")
-    public Response cancelBooking(
-            @PathParam("bookingId") UUID bookingId,
-            @Valid CancelBookingDTO request,
-            @Context SecurityContext securityContext) {
-        
-        try {
-            UUID userId = getUserIdFromContext(securityContext);
-            Booking booking = bookingService.cancelBooking(
-                bookingId, 
-                userId, 
-                request.reason
-            );
-            return Response.ok(toDTO(booking)).build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
-        }
-    }
-    
-    /**
-     * Submit rating for completed ride.
-     */
-    @POST
-    @Path("/{bookingId}/rate")
-    @RolesAllowed({"RIDER", "DRIVER"})
-    @Operation(summary = "Rate a completed ride")
-    public Response rateRide(
-            @PathParam("bookingId") UUID bookingId,
-            @Valid RatingDTO request,
-            @Context SecurityContext securityContext) {
-        
-        try {
-            UUID userId = getUserIdFromContext(securityContext);
-            Booking booking = bookingService.submitRating(
-                bookingId,
-                userId,
-                request.rating,
-                request.feedback
-            );
-            return Response.ok(toDTO(booking)).build();
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(new ErrorResponse(e.getMessage()))
-                    .build();
-        }
-    }
-    
-    /**
-     * Get rider's booking history.
+     * GET /bookings
+     * List bookings for current user
+     * 
+     * Filtering Logic:
+     * - PASSENGER: Returns their bookings
+     * - DRIVER: Returns bookings for their routes
      */
     @GET
-    @Path("/rider/{riderId}")
-    @RolesAllowed({"RIDER"})
-    @Operation(summary = "Get rider's booking history")
-    public Response getRiderBookings(@PathParam("riderId") UUID riderId) {
-        List<Booking> bookings = bookingService.getRiderBookings(riderId);
-        return Response.ok(bookings.stream().map(this::toDTO).toList()).build();
+    @RolesAllowed({"PASSENGER", "DRIVER"})
+    @Operation(
+        summary = "List bookings",
+        description = "List bookings filtered by user role. Passengers see their bookings, drivers see bookings for their routes."
+    )
+    public Response listBookings(@QueryParam("status") String status) {
+        try {
+            UUID currentUserId = UUID.fromString(jwt.getSubject());
+            User currentUser = userRepository.findByIdOptional(currentUserId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+            
+            List<Booking> bookings;
+            
+            if (currentUser.isRider()) {
+                // Passenger sees their bookings
+                bookings = bookingRepository.findByRiderId(currentUserId);
+            } else if (currentUser.isDriver()) {
+                // Driver sees bookings for their routes
+                bookings = bookingRepository.findPendingBookingsForDriver(currentUserId);
+                
+                // Also get confirmed and in-progress bookings
+                List<UUID> driverRoutes = routeRepository.findByDriverId(currentUserId)
+                    .stream()
+                    .map(Route::getId)
+                    .toList();
+                
+                for (UUID routeId : driverRoutes) {
+                    bookings.addAll(bookingRepository.findActiveBookingsByRoute(routeId));
+                }
+            } else {
+                bookings = List.of();
+            }
+            
+            // Apply status filter if provided
+            if (status != null && !status.isEmpty()) {
+                try {
+                    BookingStatus filterStatus = BookingStatus.valueOf(status.toUpperCase());
+                    bookings = bookings.stream()
+                        .filter(b -> b.getStatus() == filterStatus)
+                        .toList();
+                } catch (IllegalArgumentException e) {
+                    return Response.status(Response.Status.BAD_REQUEST)
+                        .entity(new ErrorResponse("Invalid status: " + status))
+                        .build();
+                }
+            }
+            
+            // Convert to response DTOs
+            List<BookingListItem> responseList = bookings.stream()
+                .map(this::toBookingListItem)
+                .toList();
+            
+            return Response.ok(responseList).build();
+            
+        } catch (Exception e) {
+            Log.error("Failed to list bookings", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to list bookings"))
+                .build();
+        }
     }
     
     /**
-     * Get driver's pending booking requests.
+     * GET /bookings/:id
+     * Get details of a specific booking
+     * 
+     * Authorization:
+     * - Passenger can view own bookings
+     * - Driver can view bookings for their routes
      */
     @GET
-    @Path("/driver/{driverId}/pending")
-    @RolesAllowed({"DRIVER"})
-    @Operation(summary = "Get driver's pending booking requests")
-    public Response getDriverPendingBookings(@PathParam("driverId") UUID driverId) {
-        List<Booking> bookings = bookingService.getDriverPendingBookings(driverId);
-        return Response.ok(bookings.stream().map(this::toDTO).toList()).build();
+    @Path("/{id}")
+    @RolesAllowed({"PASSENGER", "DRIVER"})
+    @Operation(
+        summary = "Get booking details",
+        description = "Get full details of a specific booking"
+    )
+    public Response getBooking(@PathParam("id") String bookingIdStr) {
+        try {
+            UUID bookingId = UUID.fromString(bookingIdStr);
+            UUID currentUserId = UUID.fromString(jwt.getSubject());
+            
+            Booking booking = bookingRepository.findByIdOptional(bookingId)
+                .orElseThrow(() -> new NotFoundException("Booking not found"));
+            
+            // Verify authorization
+            User currentUser = userRepository.findByIdOptional(currentUserId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+            
+            boolean isPassenger = booking.getRider().getId().equals(currentUserId);
+            boolean isDriver = booking.getRoute().getDriverId().equals(currentUserId);
+            
+            if (!isPassenger && !isDriver) {
+                return Response.status(Response.Status.FORBIDDEN)
+                    .entity(new ErrorResponse("You are not authorized to view this booking"))
+                    .build();
+            }
+            
+            // Get passenger info if driver is viewing
+            PassengerInfo passengerInfo = null;
+            if (isDriver) {
+                User passenger = booking.getRider();
+                passengerInfo = new PassengerInfo(
+                    passenger.getFullName(),
+                    passenger.getPhoneNumber(),
+                    passenger.getRating().doubleValue()
+                );
+            }
+            
+            BookingDetailsResponse response = toBookingDetailsResponse(booking, passengerInfo);
+            
+            return Response.ok(response).build();
+            
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            Log.error("Failed to get booking details", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to get booking details"))
+                .build();
+        }
     }
     
     /**
-     * Get active bookings for a route.
+     * PATCH /bookings/:id
+     * Update booking status
+     * 
+     * Authorization & State Transitions:
+     * - DRIVER can: PENDING → CONFIRMED → IN_PROGRESS → COMPLETED
+     * - PASSENGER cannot change status after CONFIRMED
      */
-    @GET
-    @Path("/route/{routeId}/active")
-    @RolesAllowed({"DRIVER"})
-    @Operation(summary = "Get active bookings for a route")
-    public Response getRouteActiveBookings(@PathParam("routeId") UUID routeId) {
-        List<Booking> bookings = bookingService.getRouteActiveBookings(routeId);
-        return Response.ok(bookings.stream().map(this::toDTO).toList()).build();
+    @PATCH
+    @Path("/{id}")
+    @RolesAllowed({"DRIVER", "PASSENGER"})
+    @Transactional
+    @Operation(
+        summary = "Update booking status",
+        description = "Update booking status. Drivers can progress through lifecycle, passengers have limited control."
+    )
+    public Response updateBookingStatus(
+            @PathParam("id") String bookingIdStr,
+            @Valid UpdateBookingStatusRequest request) {
+        
+        try {
+            UUID bookingId = UUID.fromString(bookingIdStr);
+            UUID currentUserId = UUID.fromString(jwt.getSubject());
+            
+            Booking booking = bookingRepository.findByIdOptional(bookingId)
+                .orElseThrow(() -> new NotFoundException("Booking not found"));
+            
+            User currentUser = userRepository.findByIdOptional(currentUserId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+            
+            boolean isDriver = booking.getRoute().getDriverId().equals(currentUserId);
+            boolean isPassenger = booking.getRider().getId().equals(currentUserId);
+            
+            if (!isDriver && !isPassenger) {
+                return Response.status(Response.Status.FORBIDDEN)
+                    .entity(new ErrorResponse("You are not authorized to update this booking"))
+                    .build();
+            }
+            
+            // Parse new status
+            BookingStatus newStatus;
+            try {
+                newStatus = BookingStatus.valueOf(request.status().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse("Invalid status: " + request.status()))
+                    .build();
+            }
+            
+            // Validate state transition
+            BookingStatus currentStatus = booking.getStatus();
+            
+            if (isDriver) {
+                // Driver can progress through lifecycle
+                if (currentStatus == BookingStatus.PENDING && newStatus == BookingStatus.CONFIRMED) {
+                    booking.confirm();
+                } else if (currentStatus == BookingStatus.CONFIRMED && newStatus == BookingStatus.IN_PROGRESS) {
+                    booking.startRide();
+                } else if (currentStatus == BookingStatus.IN_PROGRESS && newStatus == BookingStatus.COMPLETED) {
+                    booking.complete();
+                } else {
+                    return Response.status(Response.Status.BAD_REQUEST)
+                        .entity(new ErrorResponse("Invalid status transition"))
+                        .build();
+                }
+            } else {
+                // Passenger cannot change status after confirmed
+                if (currentStatus != BookingStatus.PENDING) {
+                    return Response.status(Response.Status.FORBIDDEN)
+                        .entity(new ErrorResponse("Cannot change booking status after confirmation"))
+                        .build();
+                }
+            }
+            
+            bookingRepository.persist(booking);
+            
+            Log.info("Booking status updated: " + bookingId + " -> " + newStatus);
+            
+            BookingResponse response = toBookingResponse(booking);
+            
+            return Response.ok(response).build();
+            
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            Log.error("Failed to update booking status", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to update booking status"))
+                .build();
+        }
     }
     
-    // Helper methods
-    private UUID getUserIdFromContext(SecurityContext context) {
-        // In production, extract from JWT token
-        // For now, return a dummy UUID
-        return UUID.randomUUID();
+    /**
+     * POST /bookings/:id/cancel
+     * Cancel a booking
+     * 
+     * Side Effects:
+     * - Send notifications
+     * - Update route availability
+     */
+    @POST
+    @Path("/{id}/cancel")
+    @RolesAllowed({"DRIVER", "PASSENGER"})
+    @Transactional
+    @Operation(
+        summary = "Cancel booking",
+        description = "Cancel a booking. Both driver and passenger can cancel."
+    )
+    public Response cancelBooking(@PathParam("id") String bookingIdStr) {
+        try {
+            UUID bookingId = UUID.fromString(bookingIdStr);
+            UUID currentUserId = UUID.fromString(jwt.getSubject());
+            
+            Booking booking = bookingRepository.findByIdOptional(bookingId)
+                .orElseThrow(() -> new NotFoundException("Booking not found"));
+            
+            boolean isDriver = booking.getRoute().getDriverId().equals(currentUserId);
+            boolean isPassenger = booking.getRider().getId().equals(currentUserId);
+            
+            if (!isDriver && !isPassenger) {
+                return Response.status(Response.Status.FORBIDDEN)
+                    .entity(new ErrorResponse("You are not authorized to cancel this booking"))
+                    .build();
+            }
+            
+            if (!booking.canBeCancelled()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(new ErrorResponse("Booking cannot be cancelled in current state"))
+                    .build();
+            }
+            
+            String cancellationReason = isDriver 
+                ? "Cancelled by driver" 
+                : "Cancelled by passenger";
+            
+            booking.cancel(currentUserId, cancellationReason);
+            bookingRepository.persist(booking);
+            
+            Log.info("Booking cancelled: " + bookingId);
+            
+            BookingResponse response = toBookingResponse(booking);
+            
+            return Response.ok(response).build();
+            
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            Log.error("Failed to cancel booking", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to cancel booking"))
+                .build();
+        }
     }
     
-    private BookingDTO toDTO(Booking booking) {
-        return new BookingDTO(
-            booking.getId(),
-            booking.getRider().getId(),
-            booking.getRoute().getId(),
-            booking.getPickupLocation().getY(),
-            booking.getPickupLocation().getX(),
-            booking.getDropoffLocation().getY(),
-            booking.getDropoffLocation().getX(),
+    // ==================== HELPER METHODS ====================
+    
+    /**
+     * Calculate fare (simplified)
+     */
+    private BigDecimal calculateFare(Route route, Point pickup, Point dropoff) {
+        // Simplified fare calculation
+        // In production, use a proper pricing service
+        double distance = pickup.distance(dropoff) * 111.0; // Rough km
+        return BigDecimal.valueOf(Math.max(distance * 5.0, 5.0)); // Min fare $5
+    }
+    
+    /**
+     * Convert to booking response DTO
+     */
+    private BookingResponse toBookingResponse(Booking booking) {
+        return new BookingResponse(
+            booking.getId().toString(),
+            booking.getRoute().getId().toString(),
+            booking.getRider().getId().toString(),
             booking.getStatus().name(),
-            booking.getScheduledPickupTime(),
-            booking.getEstimatedDropoffTime(),
-            booking.getPassengerCount(),
             booking.getFareAmount(),
-            booking.getDistanceKm(),
-            booking.getSpecialInstructions(),
-            booking.getRiderRating(),
-            booking.getDriverRating()
+            new LocationDTO(
+                booking.getPickupLocation().getY(),
+                booking.getPickupLocation().getX(),
+                booking.getPickupStop() != null ? booking.getPickupStop().getId().toString() : null
+            ),
+            new LocationDTO(
+                booking.getDropoffLocation().getY(),
+                booking.getDropoffLocation().getX(),
+                booking.getDropoffStop() != null ? booking.getDropoffStop().getId().toString() : null
+            ),
+            booking.getCreatedAt()
         );
     }
     
-    // DTOs
-    public record CreateBookingDTO(
-        @NotNull UUID riderId,
-        @NotNull UUID routeId,
-        @NotNull @DecimalMin("-90") @DecimalMax("90") Double pickupLatitude,
-        @NotNull @DecimalMin("-180") @DecimalMax("180") Double pickupLongitude,
-        @NotNull @DecimalMin("-90") @DecimalMax("90") Double dropoffLatitude,
-        @NotNull @DecimalMin("-180") @DecimalMax("180") Double dropoffLongitude,
-        @NotNull @Future LocalDateTime scheduledPickupTime,
-        @Min(1) @Max(10) Integer passengerCount,
-        @Size(max = 500) String specialInstructions
+    /**
+     * Convert to list item DTO
+     */
+    private BookingListItem toBookingListItem(Booking booking) {
+        RouteInfo routeInfo = new RouteInfo(
+            booking.getRoute().getName().split(" → ")[0],
+            booking.getRoute().getName().split(" → ").length > 1 ? 
+                booking.getRoute().getName().split(" → ")[1] : "",
+            "..." // Would need polyline encoding
+        );
+        
+        return new BookingListItem(
+            booking.getId().toString(),
+            booking.getRoute().getId().toString(),
+            routeInfo,
+            booking.getRider().getId().toString(),
+            booking.getStatus().name(),
+            booking.getFareAmount(),
+            booking.getScheduledPickupTime(),
+            booking.getCreatedAt()
+        );
+    }
+    
+    /**
+     * Convert to details response DTO
+     */
+    private BookingDetailsResponse toBookingDetailsResponse(
+            Booking booking,
+            PassengerInfo passengerInfo) {
+        
+        return new BookingDetailsResponse(
+            booking.getId().toString(),
+            booking.getRoute().getId().toString(),
+            booking.getRider().getId().toString(),
+            passengerInfo,
+            booking.getStatus().name(),
+            booking.getFareAmount(),
+            new LocationDTO(
+                booking.getPickupLocation().getY(),
+                booking.getPickupLocation().getX(),
+                booking.getPickupStop() != null ? booking.getPickupStop().getId().toString() : null
+            ),
+            new LocationDTO(
+                booking.getDropoffLocation().getY(),
+                booking.getDropoffLocation().getX(),
+                booking.getDropoffStop() != null ? booking.getDropoffStop().getId().toString() : null
+            ),
+            booking.getScheduledPickupTime(),
+            booking.getEstimatedDropoffTime(),
+            booking.getCreatedAt(),
+            booking.getUpdatedAt()
+        );
+    }
+    
+    // ==================== DTOs ====================
+    
+    /**
+     * POST /bookings request
+     */
+    public record CreateBookingRequest(
+        @NotNull String routeId,
+        @NotNull LocationRequest pickupLocation,
+        @NotNull LocationRequest dropoffLocation
     ) {}
     
-    public record CancelBookingDTO(
-        @NotNull @Size(min = 5, max = 500) String reason
+    public record LocationRequest(
+        @NotNull Double latitude,
+        @NotNull Double longitude,
+        String stopId
     ) {}
     
-    public record RatingDTO(
-        @NotNull @Min(1) @Max(5) Integer rating,
-        @Size(max = 1000) String feedback
-    ) {}
-    
-    public record BookingDTO(
-        UUID id,
-        UUID riderId,
-        UUID routeId,
-        Double pickupLatitude,
-        Double pickupLongitude,
-        Double dropoffLatitude,
-        Double dropoffLongitude,
+    /**
+     * Booking response
+     */
+    public record BookingResponse(
+        String id,
+        String routeId,
+        String passengerId,
         String status,
+        BigDecimal fare,
+        LocationDTO pickupLocation,
+        LocationDTO dropoffLocation,
+        LocalDateTime createdAt
+    ) {}
+    
+    public record LocationDTO(
+        Double latitude,
+        Double longitude,
+        String stopId
+    ) {}
+    
+    /**
+     * GET /bookings list item
+     */
+    public record BookingListItem(
+        String id,
+        String routeId,
+        RouteInfo route,
+        String passengerId,
+        String status,
+        BigDecimal fare,
+        LocalDateTime scheduledPickupTime,
+        LocalDateTime createdAt
+    ) {}
+    
+    public record RouteInfo(
+        String origin,
+        String destination,
+        String polyline
+    ) {}
+    
+    /**
+     * GET /bookings/:id response
+     */
+    public record BookingDetailsResponse(
+        String id,
+        String routeId,
+        String passengerId,
+        PassengerInfo passenger,
+        String status,
+        BigDecimal fare,
+        LocationDTO pickupLocation,
+        LocationDTO dropoffLocation,
         LocalDateTime scheduledPickupTime,
         LocalDateTime estimatedDropoffTime,
-        Integer passengerCount,
-        java.math.BigDecimal fareAmount,
-        java.math.BigDecimal distanceKm,
-        String specialInstructions,
-        Integer riderRating,
-        Integer driverRating
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt
     ) {}
     
-    public record ErrorResponse(String message) {}
+    public record PassengerInfo(
+        String fullName,
+        String phoneNumber,
+        Double rating
+    ) {}
+    
+    /**
+     * PATCH /bookings/:id request
+     */
+    public record UpdateBookingStatusRequest(
+        @NotNull String status
+    ) {}
 }
