@@ -33,7 +33,7 @@ import java.util.List;
  * 1. https://console.cloud.google.com/
  * 2. Enable "Places API (New)"
  * 3. Create credentials → API Key
- * 4. Restrict to your IP/domain
+ * 4. Restrict to your IP/entity
  * 5. Add to application.properties:
  *    google.places.api.key=AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXX
  */
