@@ -4,12 +4,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.client.Client;
+import jakarta.ws.rs.client.ClientBuilder;
+import jakarta.ws.rs.client.Entity;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -20,24 +23,25 @@ import java.util.*;
  * 
  * API Documentation: https://paystack.com/docs/api/
  */
-@Service
+@ApplicationScoped
 public class PaystackService {
     
     private static final Logger logger = LoggerFactory.getLogger(PaystackService.class);
     private static final String PAYSTACK_API_URL = "https://api.paystack.co";
     
-    @Value("${paystack.secret.key}")
-    private String paystackSecretKey;
+    @ConfigProperty(name = "paystack.secret.key")
+    String paystackSecretKey;
     
-    @Value("${paystack.public.key}")
-    private String paystackPublicKey;
+    @ConfigProperty(name = "paystack.public.key")
+    String paystackPublicKey;
     
-    private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
+    @Inject
+    ObjectMapper objectMapper;
     
-    public PaystackService(RestTemplate restTemplate, ObjectMapper objectMapper) {
-        this.restTemplate = restTemplate;
-        this.objectMapper = objectMapper;
+    private final Client client;
+    
+    public PaystackService() {
+        this.client = ClientBuilder.newClient();
     }
     
     /**
@@ -69,19 +73,17 @@ public class PaystackService {
                 requestBody.put("metadata", metadata);
             }
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Initializing Paystack transaction: reference={}, amount={} kobo", reference, amount);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -113,19 +115,17 @@ public class PaystackService {
         try {
             String url = PAYSTACK_API_URL + "/transaction/verify/" + reference;
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
-            
             logger.info("Verifying Paystack transaction: reference={}", reference);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .get();
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -188,19 +188,17 @@ public class PaystackService {
             requestBody.put("bank_code", bankCode);
             requestBody.put("currency", "NGN");
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Creating Paystack transfer recipient: name={}, bank={}", name, bankCode);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -248,19 +246,17 @@ public class PaystackService {
             requestBody.put("reference", reference);
             requestBody.put("currency", "NGN");
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Initiating Paystack transfer: reference={}, amount={} kobo", reference, amount);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -302,19 +298,17 @@ public class PaystackService {
         try {
             String url = PAYSTACK_API_URL + "/transfer/verify/" + reference;
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
-            
             logger.info("Verifying Paystack transfer: reference={}", reference);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .get();
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -382,17 +376,15 @@ public class PaystackService {
         try {
             String url = PAYSTACK_API_URL + "/bank?country=nigeria";
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .get();
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -431,17 +423,15 @@ public class PaystackService {
         try {
             String url = PAYSTACK_API_URL + "/bank/resolve?account_number=" + accountNumber + "&bank_code=" + bankCode;
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + paystackSecretKey)
+                .get();
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            response.close();
             
             if (jsonResponse.get("status").asBoolean()) {
                 JsonNode data = jsonResponse.get("data");
@@ -459,13 +449,6 @@ public class PaystackService {
     
     // ==================== HELPER METHODS ====================
     
-    private HttpHeaders createHeaders() {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Bearer " + paystackSecretKey);
-        return headers;
-    }
-    
     private LocalDateTime parseDateTime(JsonNode node) {
         if (node == null || node.isNull()) {
             return null;
@@ -477,6 +460,7 @@ public class PaystackService {
         }
     }
     
+    @SuppressWarnings("unchecked")
     private Map<String, Object> parseMetadata(JsonNode node) {
         if (node == null || node.isNull()) {
             return Collections.emptyMap();

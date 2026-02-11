@@ -367,6 +367,18 @@ public class TermiiService {
         
         return sendSms(phoneNumber, message, "BOOKING_" + eventType);
     }
+
+    /**
+     * Send notification SMS (generic)
+     * Wrapper method for sending notification-related SMS
+     * 
+     * @param phoneNumber Phone number in E.164 format
+     * @param message SMS message content
+     * @return SMS delivery response
+     */
+    public TermiiSmsResponse sendNotificationSms(String phoneNumber, String message) {
+        return sendSms(phoneNumber, message, "NOTIFICATION");
+    }
     
     // ==================== HELPER METHODS ====================
     

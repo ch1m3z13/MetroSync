@@ -4,6 +4,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+/**
+ * Request DTO for verifying OTP
+ * Note: Uses public fields for compatibility but adds getters for AuthResource
+ */
 public class VerifyOtpRequest {
 
     @NotBlank(message = "Phone number is required")
@@ -24,5 +28,22 @@ public class VerifyOtpRequest {
         this.phoneNumber = phoneNumber;
         this.code = code;
         this.purpose = purpose;
+    }
+    
+    // Getters for compatibility with AuthResource method calls
+    public String getPhoneNumber() {
+        return phoneNumber;
+    }
+    
+    public String getOtpCode() {
+        return code;
+    }
+    
+    public String getCode() {
+        return code;
+    }
+    
+    public String getPurpose() {
+        return purpose;
     }
 }

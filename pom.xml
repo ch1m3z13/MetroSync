@@ -274,6 +274,13 @@
             <artifactId>google-cloud-storage</artifactId>
             <version>2.36.1</version>
         </dependency>
+
+        <!-- Jakarta Servlet API (for HttpServletRequest) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
         
     </dependencies>
     
