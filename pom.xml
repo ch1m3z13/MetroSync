@@ -33,6 +33,7 @@
         <failsafe-plugin.version>3.5.0</failsafe-plugin.version>
         
         <!-- Dependency Versions (Only for non-Quarkus managed libs) -->
+        <hibernate-spatial.version>6.6.3.Final</hibernate-spatial.version> <!-- Added Explicit Version -->
         <jts.version>1.19.0</jts.version>
         <jts2geojson.version>0.18.1</jts2geojson.version>
         <testcontainers.version>1.19.7</testcontainers.version>
@@ -104,10 +105,12 @@
         
         <!-- ==================== GEOSPATIAL ==================== -->
         
-        <!-- Hibernate Spatial (Version managed by Quarkus BOM transitively) -->
+        <!-- Hibernate Spatial -->
+        <!-- Note: We must specify the version because Quarkus BOM doesn't manage this specific artifact. -->
         <dependency>
             <groupId>org.hibernate.orm</groupId>
             <artifactId>hibernate-spatial</artifactId>
+            <version>${hibernate-spatial.version}</version>
         </dependency>
         
         <!-- JTS Topology Suite -->
@@ -165,12 +168,6 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest-client-jackson</artifactId>
-        </dependency>
-
-        <!-- Multipart Support (The Fix) -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-multipart</artifactId>
         </dependency>
         
         <!-- AWS S3 -->
