@@ -32,8 +32,8 @@ public class PushNotificationService {
         try {
             Map<String, String> data = buildDataPayload(notification);
             
-            // Use high-priority for critical notifications
-            if (notification.getPriority() == Notification.Priority.CRITICAL || 
+            // Use high-priority for urgent and high notifications
+            if (notification.getPriority() == Notification.Priority.URGENT || 
                 notification.getPriority() == Notification.Priority.HIGH) {
                 firebaseMessaging.sendHighPriorityNotification(
                     deviceToken, 
@@ -186,6 +186,23 @@ public class PushNotificationService {
     }
 
     /**
+     * Send notification to a topic (broadcast)
+     * 
+     * @param topic Topic name (e.g., "all_drivers", "all_riders")
+     * @param title Notification title
+     * @param message Notification message
+     * @param data Optional data payload
+     */
+    public void sendToTopic(String topic, String title, String message, Map<String, String> data) {
+        try {
+            firebaseMessaging.sendToTopic(topic, title, message, data);
+            LOG.infof("Topic notification sent to: %s", topic);
+        } catch (Exception e) {
+            LOG.errorf("Failed to send topic notification: %s", e.getMessage());
+        }
+    }
+
+    /**
      * Build data payload from notification entity
      */
     private Map<String, String> buildDataPayload(Notification notification) {
@@ -195,18 +212,21 @@ public class PushNotificationService {
         data.put("type", notification.getType().toString());
         data.put("priority", notification.getPriority().toString());
         
-        if (notification.getBookingId() != null) {
-            data.put("bookingId", notification.getBookingId().toString());
+        // Add booking ID if present
+        if (notification.getBooking() != null) {
+            data.put("bookingId", notification.getBooking().getId().toString());
             data.put("action", "VIEW_BOOKING");
         }
         
-        if (notification.getTransactionId() != null) {
-            data.put("transactionId", notification.getTransactionId().toString());
+        // Add transaction ID if present
+        if (notification.getTransaction() != null) {
+            data.put("transactionId", notification.getTransaction().getId().toString());
             data.put("action", "VIEW_TRANSACTION");
         }
         
-        if (notification.getActionUrl() != null) {
-            data.put("actionUrl", notification.getActionUrl());
+        // Add action type if present
+        if (notification.getActionType() != null) {
+            data.put("actionType", notification.getActionType());
         }
         
         return data;

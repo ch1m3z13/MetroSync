@@ -1,6 +1,22 @@
 package com.commute.metrosync.resource;
 
-import com.commute.metrosync.dto.*;
+import com.commute.metrosync.dto.request.SendOtpRequest;
+import com.commute.metrosync.dto.request.VerifyOtpRequest;
+import com.commute.metrosync.dto.request.ResendOtpRequest;
+import com.commute.metrosync.dto.request.RegisterRequest;
+import com.commute.metrosync.dto.request.LoginRequest;
+import com.commute.metrosync.dto.request.LoginWithOtpRequest;
+import com.commute.metrosync.dto.request.ForgotPasswordRequest;
+import com.commute.metrosync.dto.request.ResetPasswordRequest;
+import com.commute.metrosync.dto.request.VerifyPhoneRequest;
+import com.commute.metrosync.dto.response.SendOtpResponse;
+import com.commute.metrosync.dto.response.VerifyOtpResponse;
+import com.commute.metrosync.dto.response.AuthResponse;
+import com.commute.metrosync.dto.response.RefreshTokenResponse;
+import com.commute.metrosync.dto.response.PhoneCheckResponse;
+import com.commute.metrosync.dto.response.EmailCheckResponse;
+import com.commute.metrosync.dto.request.LogoutRequest;
+import com.commute.metrosync.dto.response.ApiResponse;
 import com.commute.metrosync.service.AuthService;
 import com.commute.metrosync.service.OtpService;
 import jakarta.annotation.security.PermitAll;
