@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.client.Client;
+import jakarta.ws.rs.client.ClientBuilder;
+import jakarta.ws.rs.client.Entity;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -18,27 +22,28 @@ import java.util.Map;
  * 
  * API Documentation: https://developers.termii.com/
  */
-@Service
+@ApplicationScoped
 public class TermiiService {
     
     private static final Logger logger = LoggerFactory.getLogger(TermiiService.class);
     private static final String TERMII_API_URL = "https://api.ng.termii.com/api";
     
-    @Value("${termii.api.key}")
-    private String termiiApiKey;
+    @ConfigProperty(name = "termii.api.key")
+    String termiiApiKey;
     
-    @Value("${termii.sender.id:CommuteNG}")
-    private String senderName; // Must be registered with Termii
+    @ConfigProperty(name = "termii.sender.id", defaultValue = "CommuteNG")
+    String senderName; // Must be registered with Termii
     
-    @Value("${termii.channel:generic}") // generic, dnd, WhatsApp
-    private String defaultChannel;
+    @ConfigProperty(name = "termii.channel", defaultValue = "generic")
+    String defaultChannel; // generic, dnd, WhatsApp
     
-    private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
+    @Inject
+    ObjectMapper objectMapper;
     
-    public TermiiService(RestTemplate restTemplate, ObjectMapper objectMapper) {
-        this.restTemplate = restTemplate;
-        this.objectMapper = objectMapper;
+    private final Client client;
+    
+    public TermiiService() {
+        this.client = ClientBuilder.newClient();
     }
     
     /**
@@ -93,22 +98,19 @@ public class TermiiService {
             requestBody.put("pin_placeholder", pinPlaceholder != null ? pinPlaceholder : "< 1234 >");
             requestBody.put("message_text", messageTemplate);
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Sending Termii token OTP to: {}", maskPhoneNumber(phoneNumber));
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
             
             String pinId = jsonResponse.path("pinId").asText();
             String status = jsonResponse.path("status").asText();
+            
+            response.close();
             
             if ("success".equalsIgnoreCase(status)) {
                 logger.info("Termii token OTP sent successfully, pinId={}", pinId);
@@ -140,19 +142,16 @@ public class TermiiService {
             requestBody.put("pin_id", pinId);
             requestBody.put("pin", pin);
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Verifying Termii token OTP: pinId={}", pinId);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             boolean verified = "Verified".equalsIgnoreCase(jsonResponse.path("verified").asText());
             String msisdn = jsonResponse.path("msisdn").asText();
@@ -191,19 +190,16 @@ public class TermiiService {
             requestBody.put("channel", defaultChannel);
             requestBody.put("api_key", termiiApiKey);
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Sending {} SMS to: {}", messageType, maskPhoneNumber(phoneNumber));
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             String messageId = jsonResponse.path("message_id").asText();
             String status = jsonResponse.path("message").asText();
@@ -242,19 +238,16 @@ public class TermiiService {
             requestBody.put("channel", defaultChannel);
             requestBody.put("api_key", termiiApiKey);
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-            
             logger.info("Sending bulk SMS to {} recipients", phoneNumbers.length);
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.POST, 
-                entity, 
-                String.class
-            );
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .post(Entity.json(requestBody));
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
+            
+            response.close();
             
             String messageId = jsonResponse.path("message_id").asText();
             String status = jsonResponse.path("message").asText();
@@ -276,17 +269,14 @@ public class TermiiService {
         try {
             String url = TERMII_API_URL + "/get-balance?api_key=" + termiiApiKey;
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .get();
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            response.close();
             
             double balance = jsonResponse.path("balance").asDouble();
             String currency = jsonResponse.path("currency").asText();
@@ -311,17 +301,14 @@ public class TermiiService {
         try {
             String url = TERMII_API_URL + "/sms/inbox?api_key=" + termiiApiKey + "&message_id=" + messageId;
             
-            HttpHeaders headers = createHeaders();
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            Response response = client.target(url)
+                .request(MediaType.APPLICATION_JSON)
+                .get();
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                url, 
-                HttpMethod.GET, 
-                entity, 
-                String.class
-            );
+            String responseBody = response.readEntity(String.class);
+            JsonNode jsonResponse = objectMapper.readTree(responseBody);
             
-            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            response.close();
             
             if (jsonResponse.isArray() && jsonResponse.size() > 0) {
                 JsonNode msg = jsonResponse.get(0);
@@ -382,12 +369,6 @@ public class TermiiService {
     }
     
     // ==================== HELPER METHODS ====================
-    
-    private HttpHeaders createHeaders() {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        return headers;
-    }
     
     private String maskPhoneNumber(String phoneNumber) {
         if (phoneNumber == null || phoneNumber.length() < 8) {

@@ -93,18 +93,48 @@ public class User extends BaseEntity {
     @Column(name = "last_login")
     private LocalDateTime lastLogin;
 
-    // ADDED: Driver Status field to match database column and fix SemanticException
+    // Driver Status field
     @Column(name = "driver_status", length = 20)
     private String driverStatus = "OFFLINE";
+
+    // ==================== FIREBASE / PUSH NOTIFICATION FIELDS ====================
     
-    // Relationships
+    /**
+     * Firebase Cloud Messaging device token for push notifications
+     */
+    @Column(name = "device_token", length = 500)
+    private String deviceToken;
+    
+    /**
+     * Device platform: ANDROID, IOS, or WEB
+     */
+    @Column(name = "device_platform", length = 20)
+    private String devicePlatform;
+    
+    /**
+     * Last time the device token was updated
+     * Used to clean up stale/inactive tokens
+     */
+    @Column(name = "device_updated_at")
+    private LocalDateTime deviceUpdatedAt;
+    
+    /**
+     * Whether user has enabled push notifications
+     * Defaults to true, user can disable in settings
+     */
+    @Column(name = "push_enabled")
+    private boolean pushEnabled = true;
+    
+    // ==================== RELATIONSHIPS ====================
+
     @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Vehicle> vehicles = new ArrayList<>();
     
     @OneToMany(mappedBy = "rider", cascade = CascadeType.ALL)
     private List<Booking> bookingsAsRider = new ArrayList<>();
     
-    // Constructors
+    // ==================== CONSTRUCTORS ====================
+    
     public User() {}
     
     public User(String username, String password, String fullName, 
@@ -116,7 +146,8 @@ public class User extends BaseEntity {
         this.phoneNumber = phoneNumber;
     }
     
-    // Helper methods
+    // ==================== HELPER METHODS ====================
+    
     public void addRole(UserRole role) {
         Set<String> roleSet = new HashSet<>(Set.of(roles.split(",")));
         roleSet.add(role.name());
@@ -151,7 +182,8 @@ public class User extends BaseEntity {
         vehicle.setOwner(this);
     }
     
-    // Getters and Setters
+    // ==================== GETTERS AND SETTERS ====================
+    
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
     
@@ -209,4 +241,38 @@ public class User extends BaseEntity {
 
     public String getRole() { return this.roles; }
     public void setRole(String role) { this.roles = role; }
+
+    // --- Firebase / Push Notification Getters & Setters ---
+
+    public String getDeviceToken() {
+        return deviceToken;
+    }
+
+    public void setDeviceToken(String deviceToken) {
+        this.deviceToken = deviceToken;
+    }
+
+    public String getDevicePlatform() {
+        return devicePlatform;
+    }
+
+    public void setDevicePlatform(String devicePlatform) {
+        this.devicePlatform = devicePlatform;
+    }
+
+    public LocalDateTime getDeviceUpdatedAt() {
+        return deviceUpdatedAt;
+    }
+
+    public void setDeviceUpdatedAt(LocalDateTime deviceUpdatedAt) {
+        this.deviceUpdatedAt = deviceUpdatedAt;
+    }
+
+    public boolean isPushEnabled() {
+        return pushEnabled;
+    }
+
+    public void setPushEnabled(boolean pushEnabled) {
+        this.pushEnabled = pushEnabled;
+    }
 }
