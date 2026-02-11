@@ -1,442 +1,506 @@
 package com.commute.metrosync.resource;
 
-import com.commute.metrosync.dto.ErrorResponse;
-import com.commute.metrosync.entity.User;
-import com.commute.metrosync.repository.UserRepository;
-import com.commute.metrosync.service.PasswordService;
-import com.commute.metrosync.service.TokenService;
-
-import io.quarkus.logging.Log;
+import com.commute.metrosync.dto.*;
+import com.commute.metrosync.service.AuthService;
+import com.commute.metrosync.service.OtpService;
 import jakarta.annotation.security.PermitAll;
-import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Size;
 import jakarta.ws.rs.*;
-import jakarta.ws.rs.core.Response;
-import org.eclipse.microprofile.jwt.JsonWebToken;
+import jakarta.ws.rs.core.*;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.time.LocalDateTime;
-import java.util.Arrays;
-import java.util.List;
 import java.util.UUID;
+import java.util.logging.Logger;
 
 /**
- * Authentication & Authorization API
- * 
- * Endpoints:
- * - POST /auth/register: Create new user account
- * - POST /auth/login: Authenticate and get JWT token
- * - GET /auth/me: Get current authenticated user details
- * - POST /auth/refresh: Refresh access token (optional)
+ * Authentication Resource
+ * Handles OTP-based authentication, registration, and login
+ * Jakarta EE / JAX-RS implementation
  */
-@Path("/auth")
-@Produces("application/json")
-@Consumes("application/json")
-@Tag(name = "Authentication", description = "User authentication and authorization")
+@Path("/api/v1/auth")
+@Produces(MediaType.APPLICATION_JSON)
+@Consumes(MediaType.APPLICATION_JSON)
+@Tag(name = "Authentication", description = "OTP-based authentication endpoints")
+@PermitAll
 public class AuthResource {
-
-    @Inject
-    UserRepository userRepository;
+    
+    private static final Logger logger = Logger.getLogger(AuthResource.class.getName());
     
     @Inject
-    PasswordService passwordService;
+    private AuthService authService;
     
     @Inject
-    TokenService tokenService;
-
-    @Inject
-    JsonWebToken jwt;
-
-    /**
-     * POST /auth/register
-     * Create new user account
-     * 
-     * Validation:
-     * - Email must be valid format and unique
-     * - Password minimum 8 characters
-     * - Roles array must contain at least PASSENGER or DRIVER
-     */
+    private OtpService otpService;
+    
+    @Context
+    private UriInfo uriInfo;
+    
+    // ==================== OTP ENDPOINTS ====================
+    
     @POST
-    @Path("/register")
-    @PermitAll
-    @Transactional
-    @Operation(
-        summary = "Register new user",
-        description = "Create a new user account with email and password. Roles can be PASSENGER, DRIVER, or both."
-    )
-    public Response register(@Valid RegisterRequest request) {
+    @Path("/send-otp")
+    @Operation(summary = "Send OTP", description = "Send OTP code to phone number via SMS")
+    public Response sendOtp(
+            @Valid SendOtpRequest request,
+            @Context HttpServletRequest httpRequest) {
+        
         try {
-            Log.info("Registration attempt for email: " + request.email());
-
-            // 1. Validate email is unique
-            if (userRepository.findByEmail(request.email()).isPresent()) {
-                return Response.status(409)
-                        .entity(new ErrorResponse("Email already exists"))
-                        .build();
+            String ipAddress = getClientIpAddress(httpRequest);
+            logger.info("Sending OTP to " + maskPhoneNumber(request.getPhoneNumber()) + 
+                ": purpose=" + request.getPurpose() + ", ip=" + ipAddress);
+            
+            // Validate phone number format (Nigerian)
+            if (!request.getPhoneNumber().matches("^\\+234[7-9][0-1][0-9]{8}$")) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error("Invalid Nigerian phone number format. Expected: +234XXXXXXXXXX"))
+                    .build();
             }
             
-            // 2. Validate password strength (minimum 8 characters from annotation)
-            // Additional validation happens via @Valid annotation
-            
-            // 3. Validate roles array
-            if (request.roles() == null || request.roles().isEmpty()) {
-                return Response.status(400)
-                        .entity(new ErrorResponse("At least one role (PASSENGER or DRIVER) is required"))
+            // Check if phone is already registered (for REGISTRATION purpose)
+            if ("REGISTRATION".equals(request.getPurpose())) {
+                if (authService.isPhoneNumberRegistered(request.getPhoneNumber())) {
+                    return Response.status(Response.Status.CONFLICT)
+                        .entity(ApiResponse.error("Phone number already registered"))
                         .build();
-            }
-            
-            // Validate roles are valid
-            List<String> validRoles = Arrays.asList("PASSENGER", "DRIVER");
-            for (String role : request.roles()) {
-                if (!validRoles.contains(role)) {
-                    return Response.status(400)
-                            .entity(new ErrorResponse("Invalid role: " + role + ". Must be PASSENGER or DRIVER."))
-                            .build();
                 }
             }
             
-            // 4. Create new user
-            User user = new User();
-            user.setUsername(extractUsernameFromEmail(request.email())); // Generate username from email
-            user.setPasswordHash(passwordService.hashPassword(request.password()));
-            user.setFullName(request.fullName());
-            user.setEmail(request.email());
-            user.setPhoneNumber(request.phoneNumber()); // Optional, can be null
+            SendOtpResponse response = otpService.sendOtp(
+                request.getPhoneNumber(),
+                request.getPurpose(),
+                ipAddress,
+                httpRequest.getHeader("User-Agent")
+            );
             
-            // Set roles as comma-separated string for database storage
-            user.setRoles(String.join(",", request.roles()));
-            user.setIsActive(true);
-            user.setIsVerified(false);
-            
-            Log.info("Assigned roles: " + user.getRoles());
-            
-            // 5. Persist user
-            userRepository.persist(user);
-            userRepository.flush();
-            
-            Log.info("User registered successfully with ID: " + user.getId());
-            
-            // 6. Return success response (201 Created)
-            return Response.status(201)
-                    .entity(new RegisterResponse(
-                        "User registered successfully",
-                        user.getId().toString()
-                    ))
+            if (response.isSuccess()) {
+                return Response.ok(ApiResponse.success(response, "OTP sent successfully")).build();
+            } else {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error(response.getMessage()))
                     .build();
+            }
             
+        } catch (IllegalArgumentException e) {
+            logger.warning("Invalid OTP request: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(ApiResponse.error(e.getMessage()))
+                .build();
         } catch (Exception e) {
-            Log.error("Registration failed", e);
-            return Response.status(500)
-                    .entity(new ErrorResponse("An error occurred during registration: " + e.getMessage()))
-                    .build();
+            logger.severe("Error sending OTP: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to send OTP"))
+                .build();
         }
     }
-
-    /**
-     * POST /auth/login
-     * Authenticate user and get JWT token
-     * 
-     * Response includes:
-     * - Access token (JWT) - valid for 24 hours (configurable)
-     * - User details (id, email, fullName, roles)
-     */
+    
+    @POST
+    @Path("/verify-otp")
+    @Operation(summary = "Verify OTP", description = "Verify OTP code entered by user")
+    public Response verifyOtp(@Valid VerifyOtpRequest request) {
+        
+        try {
+            logger.info("Verifying OTP for " + maskPhoneNumber(request.getPhoneNumber()) + 
+                ": purpose=" + request.getPurpose());
+            
+            VerifyOtpResponse response = otpService.verifyOtp(
+                request.getPhoneNumber(),
+                request.getOtpCode(),
+                request.getPurpose()
+            );
+            
+            if (response.isSuccess()) {
+                return Response.ok(ApiResponse.success(response, "OTP verified successfully")).build();
+            } else {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error(response.getMessage()))
+                    .build();
+            }
+            
+        } catch (Exception e) {
+            logger.severe("Error verifying OTP: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to verify OTP"))
+                .build();
+        }
+    }
+    
+    @POST
+    @Path("/resend-otp")
+    @Operation(summary = "Resend OTP", description = "Resend OTP code to phone number")
+    public Response resendOtp(
+            @Valid ResendOtpRequest request,
+            @Context HttpServletRequest httpRequest) {
+        
+        try {
+            String ipAddress = getClientIpAddress(httpRequest);
+            logger.info("Resending OTP to " + maskPhoneNumber(request.getPhoneNumber()) + 
+                ": purpose=" + request.getPurpose());
+            
+            SendOtpResponse response = otpService.sendOtp(
+                request.getPhoneNumber(),
+                request.getPurpose(),
+                ipAddress,
+                httpRequest.getHeader("User-Agent")
+            );
+            
+            if (response.isSuccess()) {
+                return Response.ok(ApiResponse.success(response, "OTP resent successfully")).build();
+            } else {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error(response.getMessage()))
+                    .build();
+            }
+            
+        } catch (Exception e) {
+            logger.severe("Error resending OTP: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to resend OTP"))
+                .build();
+        }
+    }
+    
+    // ==================== REGISTRATION ====================
+    
+    @POST
+    @Path("/register")
+    @Operation(summary = "Register with OTP", description = "Register new user with OTP-verified phone number")
+    public Response register(@Valid RegisterRequest request) {
+        
+        try {
+            logger.info("Registering new user: phone=" + maskPhoneNumber(request.getPhoneNumber()) + 
+                ", userType=" + request.getUserType());
+            
+            // Verify OTP first
+            VerifyOtpResponse otpVerification = otpService.verifyOtp(
+                request.getPhoneNumber(),
+                request.getOtpCode(),
+                "REGISTRATION"
+            );
+            
+            if (!otpVerification.isSuccess()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error("OTP verification failed: " + otpVerification.getMessage()))
+                    .build();
+            }
+            
+            // Register user
+            AuthResponse response = authService.registerWithOtp(request);
+            
+            return Response.status(Response.Status.CREATED)
+                .entity(ApiResponse.success(response, "Registration successful"))
+                .build();
+            
+        } catch (IllegalArgumentException e) {
+            logger.warning("Invalid registration request: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(ApiResponse.error(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            logger.severe("Error during registration: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Registration failed"))
+                .build();
+        }
+    }
+    
+    // ==================== LOGIN ====================
+    
     @POST
     @Path("/login")
-    @PermitAll
-    @Operation(
-        summary = "User login",
-        description = "Authenticate with email and password to receive JWT token"
-    )
+    @Operation(summary = "Login with password", description = "Login with email/phone and password")
     public Response login(@Valid LoginRequest request) {
+        
         try {
-            Log.info("Login attempt for email: " + request.email());
-
-            // 1. Find user by email
-            User user = userRepository.findByEmail(request.email())
-                .orElseThrow(() -> {
-                    Log.warn("Login failed: Email not found - " + request.email());
-                    return new WebApplicationException(
-                        Response.status(401)
-                            .entity(new ErrorResponse("Invalid credentials"))
-                            .build()
-                    );
-                });
+            logger.info("User login attempt: identifier=" + request.getIdentifier());
             
-            // 2. Verify password
-            if (!passwordService.verifyPassword(request.password(), user.getPasswordHash())) {
-                Log.warn("Login failed: Invalid password for email: " + request.email());
-                return Response.status(401)
-                        .entity(new ErrorResponse("Invalid credentials"))
-                        .build();
-            }
+            AuthResponse response = authService.login(request);
             
-            // 3. Update last login timestamp
-            user.setLastLogin(LocalDateTime.now());
-            userRepository.persist(user);
+            return Response.ok(ApiResponse.success(response, "Login successful")).build();
             
-            // 4. Generate JWT access token
-            String token = tokenService.generateAccessToken(user);
-            
-            Log.info("Login successful for user: " + user.getEmail());
-
-            // 5. Create response with user details and token
-            UserResponse userResponse = new UserResponse(
-                user.getId().toString(),
-                user.getEmail(),
-                user.getFullName(),
-                user.getPhoneNumber(),
-                parseRoles(user.getRoles())
-            );
-            
-            LoginResponse response = new LoginResponse(token, userResponse);
-            
-            return Response.ok(response).build();
-            
-        } catch (WebApplicationException e) {
-            throw e;
+        } catch (IllegalArgumentException e) {
+            logger.warning("Invalid login credentials: " + e.getMessage());
+            return Response.status(Response.Status.UNAUTHORIZED)
+                .entity(ApiResponse.error("Invalid credentials"))
+                .build();
         } catch (Exception e) {
-            Log.error("Login Error", e);
-            return Response.status(500)
-                    .entity(new ErrorResponse("An error occurred during login"))
-                    .build();
+            logger.severe("Error during login: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Login failed"))
+                .build();
         }
     }
-
-    /**
-     * GET /auth/me
-     * Get current authenticated user details
-     * 
-     * Requires: Authorization header with valid JWT token
-     * Returns: User profile information
-     */
-    @GET
-    @Path("/me")
-    @RolesAllowed({"PASSENGER", "DRIVER"})
-    @Operation(
-        summary = "Get current user",
-        description = "Get details of the currently authenticated user"
-    )
-    public Response getCurrentUser() {
+    
+    @POST
+    @Path("/login-with-otp")
+    @Operation(summary = "Login with OTP", description = "Passwordless login using OTP verification")
+    public Response loginWithOtp(@Valid LoginWithOtpRequest request) {
+        
         try {
-            // Get user ID from JWT token subject
-            String userId = jwt.getSubject();
+            logger.info("OTP login attempt: phone=" + maskPhoneNumber(request.getPhoneNumber()));
             
-            if (userId == null) {
-                return Response.status(401)
-                        .entity(new ErrorResponse("Invalid token"))
-                        .build();
-            }
-            
-            // Find user by ID
-            User user = userRepository.findByIdOptional(UUID.fromString(userId))
-                    .orElseThrow(() -> new WebApplicationException(
-                        Response.status(404)
-                            .entity(new ErrorResponse("User not found"))
-                            .build()
-                    ));
-            
-            // Create response with user details
-            CurrentUserResponse response = new CurrentUserResponse(
-                user.getId().toString(),
-                user.getEmail(),
-                user.getFullName(),
-                user.getPhoneNumber(),
-                parseRoles(user.getRoles()),
-                user.getCreatedAt()
+            // Verify OTP
+            VerifyOtpResponse otpVerification = otpService.verifyOtp(
+                request.getPhoneNumber(),
+                request.getOtpCode(),
+                "LOGIN"
             );
             
-            return Response.ok(response).build();
-            
-        } catch (WebApplicationException e) {
-            throw e;
-        } catch (Exception e) {
-            Log.error("Get Me failed", e);
-            return Response.status(500)
-                    .entity(new ErrorResponse("An error occurred"))
+            if (!otpVerification.isSuccess()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error("OTP verification failed: " + otpVerification.getMessage()))
                     .build();
+            }
+            
+            // Login user
+            AuthResponse response = authService.loginWithOtp(request.getPhoneNumber());
+            
+            return Response.ok(ApiResponse.success(response, "Login successful")).build();
+            
+        } catch (IllegalArgumentException e) {
+            logger.warning("OTP login failed: " + e.getMessage());
+            return Response.status(Response.Status.UNAUTHORIZED)
+                .entity(ApiResponse.error(e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            logger.severe("Error during OTP login: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Login failed"))
+                .build();
         }
     }
-
-    /**
-     * POST /auth/refresh
-     * Refresh access token using refresh token
-     * (Optional - for future enhancement)
-     * 
-     * This endpoint allows clients to get a new access token
-     * without requiring the user to log in again.
-     */
+    
+    // ==================== PASSWORD RESET ====================
+    
+    @POST
+    @Path("/forgot-password")
+    @Operation(summary = "Forgot password", description = "Initiate password reset via OTP")
+    public Response forgotPassword(
+            @Valid ForgotPasswordRequest request,
+            @Context HttpServletRequest httpRequest) {
+        
+        try {
+            logger.info("Password reset request for: " + maskPhoneNumber(request.getPhoneNumber()));
+            
+            // Check if phone number exists
+            if (!authService.isPhoneNumberRegistered(request.getPhoneNumber())) {
+                return Response.status(Response.Status.NOT_FOUND)
+                    .entity(ApiResponse.error("Phone number not registered"))
+                    .build();
+            }
+            
+            String ipAddress = getClientIpAddress(httpRequest);
+            
+            SendOtpResponse response = otpService.sendOtp(
+                request.getPhoneNumber(),
+                "PASSWORD_RESET",
+                ipAddress,
+                httpRequest.getHeader("User-Agent")
+            );
+            
+            if (response.isSuccess()) {
+                return Response.ok(ApiResponse.success(response, "OTP sent for password reset")).build();
+            } else {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error(response.getMessage()))
+                    .build();
+            }
+            
+        } catch (Exception e) {
+            logger.severe("Error during forgot password: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to process password reset request"))
+                .build();
+        }
+    }
+    
+    @POST
+    @Path("/reset-password")
+    @Operation(summary = "Reset password", description = "Reset password with OTP verification")
+    public Response resetPassword(@Valid ResetPasswordRequest request) {
+        
+        try {
+            logger.info("Password reset for: " + maskPhoneNumber(request.getPhoneNumber()));
+            
+            // Verify OTP
+            VerifyOtpResponse otpVerification = otpService.verifyOtp(
+                request.getPhoneNumber(),
+                request.getOtpCode(),
+                "PASSWORD_RESET"
+            );
+            
+            if (!otpVerification.isSuccess()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error("OTP verification failed: " + otpVerification.getMessage()))
+                    .build();
+            }
+            
+            // Reset password
+            authService.resetPassword(request.getPhoneNumber(), request.getNewPassword());
+            
+            return Response.ok(ApiResponse.success(null, "Password reset successful")).build();
+            
+        } catch (Exception e) {
+            logger.severe("Error resetting password: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to reset password"))
+                .build();
+        }
+    }
+    
+    // ==================== PHONE VERIFICATION ====================
+    
+    @POST
+    @Path("/verify-phone")
+    @Operation(summary = "Verify phone number", description = "Verify or change phone number with OTP")
+    public Response verifyPhoneNumber(@Valid VerifyPhoneRequest request) {
+        
+        try {
+            logger.info("Phone verification request: " + maskPhoneNumber(request.getPhoneNumber()));
+            
+            // Verify OTP
+            VerifyOtpResponse otpVerification = otpService.verifyOtp(
+                request.getPhoneNumber(),
+                request.getOtpCode(),
+                "PHONE_VERIFICATION"
+            );
+            
+            if (!otpVerification.isSuccess()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(ApiResponse.error("OTP verification failed: " + otpVerification.getMessage()))
+                    .build();
+            }
+            
+            // Update phone verification status
+            authService.verifyPhoneNumber(request.getUserId(), request.getPhoneNumber());
+            
+            return Response.ok(ApiResponse.success(null, "Phone number verified successfully")).build();
+            
+        } catch (Exception e) {
+            logger.severe("Error verifying phone number: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to verify phone number"))
+                .build();
+        }
+    }
+    
+    // ==================== TOKEN REFRESH ====================
+    
     @POST
     @Path("/refresh")
-    @PermitAll
-    @Operation(
-        summary = "Refresh token",
-        description = "Get new access token using refresh token"
-    )
-    public Response refreshToken() {
+    @Operation(summary = "Refresh access token", description = "Get new access token using refresh token")
+    public Response refreshToken(@Valid RefreshTokenRequest request) {
+        
         try {
-            // Verify the incoming token is a refresh token
-            String tokenType = jwt.getClaim("type");
+            logger.info("Token refresh request");
             
-            if (tokenType == null || !tokenType.equals("refresh")) {
-                return Response.status(401)
-                        .entity(new ErrorResponse("Invalid token type. Refresh token required."))
-                        .build();
-            }
-
-            // Get user from token
-            String userIdStr = jwt.getSubject();
-            if (userIdStr == null) {
-                return Response.status(401)
-                        .entity(new ErrorResponse("Invalid token: no subject"))
-                        .build();
-            }
-
-            UUID userId = UUID.fromString(userIdStr);
-            User user = userRepository.findByIdOptional(userId)
-                    .orElseThrow(() -> new WebApplicationException(
-                        Response.status(401)
-                            .entity(new ErrorResponse("User not found"))
-                            .build()
-                    ));
-
-            // Generate fresh tokens
-            String newAccessToken = tokenService.generateAccessToken(user);
-            String newRefreshToken = tokenService.generateRefreshToken(user);
-
-            // Create user DTO
-            UserResponse userResponse = new UserResponse(
-                user.getId().toString(),
-                user.getEmail(),
-                user.getFullName(),
-                user.getPhoneNumber(),
-                parseRoles(user.getRoles())
-            );
-
-            RefreshResponse response = new RefreshResponse(
-                newAccessToken,
-                newRefreshToken,
-                userResponse
-            );
-
-            return Response.ok(response).build();
-
+            RefreshTokenResponse response = authService.refreshToken(request.getRefreshToken());
+            
+            return Response.ok(ApiResponse.success(response, "Token refreshed successfully")).build();
+            
+        } catch (IllegalArgumentException e) {
+            logger.warning("Invalid refresh token: " + e.getMessage());
+            return Response.status(Response.Status.UNAUTHORIZED)
+                .entity(ApiResponse.error("Invalid or expired refresh token"))
+                .build();
         } catch (Exception e) {
-            Log.error("Token Refresh Failed", e);
-            return Response.status(401)
-                    .entity(new ErrorResponse("Token refresh failed"))
-                    .build();
+            logger.severe("Error refreshing token: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to refresh token"))
+                .build();
         }
     }
-
+    
+    // ==================== LOGOUT ====================
+    
+    @POST
+    @Path("/logout")
+    @Operation(summary = "Logout", description = "Invalidate refresh token")
+    public Response logout(@Valid LogoutRequest request) {
+        
+        try {
+            logger.info("Logout request");
+            
+            authService.logout(request.getRefreshToken());
+            
+            return Response.ok(ApiResponse.success(null, "Logout successful")).build();
+            
+        } catch (Exception e) {
+            logger.severe("Error during logout: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to logout"))
+                .build();
+        }
+    }
+    
+    // ==================== ACCOUNT STATUS ====================
+    
+    @GET
+    @Path("/check-phone/{phoneNumber}")
+    @Operation(summary = "Check phone number", description = "Check if phone number is already registered")
+    public Response checkPhoneNumber(@PathParam("phoneNumber") String phoneNumber) {
+        
+        try {
+            logger.info("Checking phone number: " + maskPhoneNumber(phoneNumber));
+            
+            boolean registered = authService.isPhoneNumberRegistered(phoneNumber);
+            
+            PhoneCheckResponse response = new PhoneCheckResponse(phoneNumber, registered);
+            
+            return Response.ok(ApiResponse.success(response)).build();
+            
+        } catch (Exception e) {
+            logger.severe("Error checking phone number: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to check phone number"))
+                .build();
+        }
+    }
+    
+    @GET
+    @Path("/check-email/{email}")
+    @Operation(summary = "Check email", description = "Check if email is already registered")
+    public Response checkEmail(@PathParam("email") String email) {
+        
+        try {
+            logger.info("Checking email: " + email);
+            
+            boolean registered = authService.isEmailRegistered(email);
+            
+            EmailCheckResponse response = new EmailCheckResponse(email, registered);
+            
+            return Response.ok(ApiResponse.success(response)).build();
+            
+        } catch (Exception e) {
+            logger.severe("Error checking email: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(ApiResponse.error("Failed to check email"))
+                .build();
+        }
+    }
+    
     // ==================== HELPER METHODS ====================
     
-    /**
-     * Extract username from email (part before @)
-     */
-    private String extractUsernameFromEmail(String email) {
-        return email.substring(0, email.indexOf('@'));
-    }
-    
-    /**
-     * Parse comma-separated roles string into List
-     */
-    private List<String> parseRoles(String rolesString) {
-        if (rolesString == null || rolesString.isEmpty()) {
-            return List.of("PASSENGER");
+    private String getClientIpAddress(HttpServletRequest request) {
+        String xForwardedFor = request.getHeader("X-Forwarded-For");
+        if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
+            return xForwardedFor.split(",")[0].trim();
         }
-        return Arrays.asList(rolesString.split(","));
+        
+        String xRealIp = request.getHeader("X-Real-IP");
+        if (xRealIp != null && !xRealIp.isEmpty()) {
+            return xRealIp;
+        }
+        
+        return request.getRemoteAddr();
     }
-
-    // ==================== REQUEST DTOs ====================
     
-    /**
-     * POST /auth/register request body
-     */
-    public record RegisterRequest(
-        @NotBlank(message = "Email is required")
-        @Email(message = "Invalid email format")
-        String email,
-        
-        @NotBlank(message = "Password is required")
-        @Size(min = 8, message = "Password must be at least 8 characters")
-        String password,
-        
-        @NotBlank(message = "Full name is required")
-        String fullName,
-        
-        String phoneNumber,  // Optional
-        
-        @NotNull(message = "Roles are required")
-        @Size(min = 1, message = "At least one role is required")
-        List<String> roles   // ["PASSENGER"] or ["DRIVER"] or ["PASSENGER", "DRIVER"]
-    ) {}
-    
-    /**
-     * POST /auth/login request body
-     */
-    public record LoginRequest(
-        @NotBlank(message = "Email is required")
-        @Email(message = "Invalid email format")
-        String email,
-        
-        @NotBlank(message = "Password is required")
-        String password
-    ) {}
-
-    // ==================== RESPONSE DTOs ====================
-    
-    /**
-     * POST /auth/register response
-     */
-    public record RegisterResponse(
-        String message,
-        String userId
-    ) {}
-    
-    /**
-     * POST /auth/login response
-     */
-    public record LoginResponse(
-        String token,
-        UserResponse user
-    ) {}
-    
-    /**
-     * User details in login/register responses
-     */
-    public record UserResponse(
-        String id,
-        String email,
-        String fullName,
-        String phoneNumber,
-        List<String> roles
-    ) {}
-    
-    /**
-     * GET /auth/me response (includes createdAt)
-     */
-    public record CurrentUserResponse(
-        String id,
-        String email,
-        String fullName,
-        String phoneNumber,
-        List<String> roles,
-        LocalDateTime createdAt
-    ) {}
-    
-    /**
-     * POST /auth/refresh response
-     */
-    public record RefreshResponse(
-        String token,
-        String refreshToken,
-        UserResponse user
-    ) {}
+    private String maskPhoneNumber(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.length() < 8) {
+            return "***";
+        }
+        return phoneNumber.substring(0, 4) + "****" + phoneNumber.substring(phoneNumber.length() - 4);
+    }
 }

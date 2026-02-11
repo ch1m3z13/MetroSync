@@ -49,3 +49,4 @@ mvnw
 src/main/resources/META-INF/*.pem
 **/META-INF/*.pem
 src/main/resources/META-INF/resources/privateKey.pem
+commute-12332-firebase-adminsdk-fbsvc-20bf4207cb.json
