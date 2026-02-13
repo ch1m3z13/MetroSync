@@ -1,43 +1,49 @@
-package com.commute.metrosync.service.impl;
+package com.commute.metrosync.service;
 
 import com.commute.metrosync.dto.*;
-import com.commute.metrosync.service.NotificationService;
-import com.commute.metrosync.service.TermiiService;
+import com.commute.metrosync.dto.NotificationDTOs.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
+import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.logging.Logger;
 
 /**
- * Notification Service Implementation
- * Handles in-app notifications and SMS alerts
+ * Notification Management Service
+ * Handles in-app notification queries, statistics, and preferences
+ * 
+ * NOTE: This is separate from NotificationService which handles sending notifications
  */
 @ApplicationScoped
 @Transactional
-public class NotificationServiceImpl implements NotificationService {
+public class NotificationManagementService {
     
-    private static final Logger logger = Logger.getLogger(NotificationServiceImpl.class.getName());
+    private static final Logger LOG = Logger.getLogger(NotificationManagementService.class);
     
-    @PersistenceContext(unitName = "commuteng-pu")
-    private EntityManager entityManager;
+    @PersistenceContext
+    EntityManager entityManager;
     
     @Inject
-    private TermiiService termiiService;
+    TermiiService termiiService;
     
-    @Override
+    /**
+     * Get paginated notifications for a user
+     */
+    @SuppressWarnings("unchecked")
     public PagedResult<NotificationResponse> getNotifications(
             UUID userId, boolean unreadOnly, String type, String priority, 
             int page, int size) {
         
-        logger.info("Getting notifications for user " + userId + ": unreadOnly=" + unreadOnly);
+        LOG.infof("Getting notifications for user %s: unreadOnly=%s", userId, unreadOnly);
         
         StringBuilder queryBuilder = new StringBuilder(
-            "SELECT * FROM notifications WHERE user_id = :userId "
+            "SELECT id, user_id, title, message, type, priority, is_read, read_at, " +
+            "action_type, booking_id, transaction_id, created_at " +
+            "FROM notifications WHERE user_id = :userId "
         );
         
         if (unreadOnly) {
@@ -85,9 +91,13 @@ public class NotificationServiceImpl implements NotificationService {
         return PagedResult.of(notifications, page, size, totalCount);
     }
     
-    @Override
+    /**
+     * Get a single notification
+     */
     public NotificationResponse getNotification(UUID userId, UUID notificationId) {
-        String query = "SELECT * FROM notifications WHERE id = :notificationId AND user_id = :userId";
+        String query = "SELECT id, user_id, title, message, type, priority, is_read, read_at, " +
+                      "action_type, booking_id, transaction_id, created_at " +
+                      "FROM notifications WHERE id = :notificationId AND user_id = :userId";
         
         Object[] result = (Object[]) entityManager.createNativeQuery(query)
             .setParameter("notificationId", notificationId)
@@ -101,9 +111,11 @@ public class NotificationServiceImpl implements NotificationService {
         return mapToNotificationResponse(result);
     }
     
-    @Override
+    /**
+     * Get unread notification count
+     */
     public int getUnreadCount(UUID userId) {
-        String query = "SELECT get_unread_notification_count(:userId)";
+        String query = "SELECT COUNT(*) FROM notifications WHERE user_id = :userId AND is_read = false";
         
         Number result = (Number) entityManager.createNativeQuery(query)
             .setParameter("userId", userId)
@@ -112,9 +124,11 @@ public class NotificationServiceImpl implements NotificationService {
         return result != null ? result.intValue() : 0;
     }
     
-    @Override
+    /**
+     * Mark notification as read
+     */
     public MarkReadResponse markAsRead(UUID userId, UUID notificationId) {
-        logger.info("Marking notification as read: " + notificationId);
+        LOG.infof("Marking notification as read: %s", notificationId);
         
         String query = "UPDATE notifications SET is_read = true, read_at = CURRENT_TIMESTAMP, " +
                       "updated_at = CURRENT_TIMESTAMP " +
@@ -137,20 +151,24 @@ public class NotificationServiceImpl implements NotificationService {
         return response;
     }
     
-    @Override
+    /**
+     * Mark all notifications as read
+     */
     public int markAllAsRead(UUID userId) {
-        logger.info("Marking all notifications as read for user: " + userId);
+        LOG.infof("Marking all notifications as read for user: %s", userId);
         
-        String query = "SELECT mark_all_notifications_read(:userId)";
+        String query = "UPDATE notifications SET is_read = true, read_at = CURRENT_TIMESTAMP, " +
+                      "updated_at = CURRENT_TIMESTAMP " +
+                      "WHERE user_id = :userId AND is_read = false";
         
-        Number result = (Number) entityManager.createNativeQuery(query)
+        return entityManager.createNativeQuery(query)
             .setParameter("userId", userId)
-            .getSingleResult();
-        
-        return result != null ? result.intValue() : 0;
+            .executeUpdate();
     }
     
-    @Override
+    /**
+     * Mark batch of notifications as read
+     */
     public int markBatchAsRead(UUID userId, List<UUID> notificationIds) {
         if (notificationIds == null || notificationIds.isEmpty()) {
             return 0;
@@ -166,7 +184,9 @@ public class NotificationServiceImpl implements NotificationService {
             .executeUpdate();
     }
     
-    @Override
+    /**
+     * Delete notification
+     */
     public void deleteNotification(UUID userId, UUID notificationId) {
         String query = "DELETE FROM notifications WHERE id = :notificationId AND user_id = :userId";
         
@@ -180,7 +200,9 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
     
-    @Override
+    /**
+     * Delete all read notifications
+     */
     public int deleteAllRead(UUID userId) {
         String query = "DELETE FROM notifications WHERE user_id = :userId AND is_read = true";
         
@@ -189,28 +211,39 @@ public class NotificationServiceImpl implements NotificationService {
             .executeUpdate();
     }
     
-    @Override
+    /**
+     * Get notification preferences
+     */
     public NotificationPreferencesResponse getPreferences(UUID userId) {
         // TODO: Implement preferences table and logic
         NotificationPreferencesResponse response = new NotificationPreferencesResponse();
         response.setEmailNotifications(true);
         response.setSmsNotifications(true);
         response.setPushNotifications(true);
+        response.setBookingNotifications(true);
+        response.setPaymentNotifications(true);
+        response.setPromotionalNotifications(false);
         return response;
     }
     
-    @Override
+    /**
+     * Update notification preferences
+     */
     public NotificationPreferencesResponse updatePreferences(UUID userId, NotificationPreferencesRequest request) {
         // TODO: Implement preferences update
         return getPreferences(userId);
     }
     
-    @Override
+    /**
+     * Get notification statistics
+     */
     public NotificationStatisticsResponse getStatistics(UUID userId) {
         String query = "SELECT COUNT(*) as total, " +
                       "COUNT(*) FILTER (WHERE is_read = false) as unread, " +
                       "COUNT(*) FILTER (WHERE is_read = true) as read, " +
-                      "COUNT(*) FILTER (WHERE priority = 'URGENT') as urgent " +
+                      "COUNT(*) FILTER (WHERE priority = 'URGENT') as urgent, " +
+                      "COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as today, " +
+                      "COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') as week " +
                       "FROM notifications WHERE user_id = :userId";
         
         Object[] result = (Object[]) entityManager.createNativeQuery(query)
@@ -222,16 +255,20 @@ public class NotificationServiceImpl implements NotificationService {
         response.setUnreadCount(((Number) result[1]).intValue());
         response.setReadCount(((Number) result[2]).intValue());
         response.setUrgentCount(((Number) result[3]).intValue());
+        response.setTodayCount(((Number) result[4]).intValue());
+        response.setWeekCount(((Number) result[5]).intValue());
         
         return response;
     }
     
-    @Override
+    /**
+     * Send notification (creates in-app notification)
+     */
     public NotificationResponse sendNotification(
             UUID userId, String title, String message, String type, 
             String priority, Map<String, Object> data, String actionUrl) {
         
-        logger.info("Sending notification to user " + userId + ": " + type);
+        LOG.infof("Sending notification to user %s: %s", userId, type);
         
         UUID notificationId = createNotification(
             userId, title, message, type, priority, data, actionUrl, null, null
@@ -256,12 +293,14 @@ public class NotificationServiceImpl implements NotificationService {
         return response;
     }
     
-    @Override
+    /**
+     * Broadcast notification to multiple users
+     */
     public int broadcastNotification(
             List<UUID> userIds, String title, String message, 
             String type, String priority, Map<String, Object> data) {
         
-        logger.info("Broadcasting notification to " + userIds.size() + " users");
+        LOG.infof("Broadcasting notification to %d users", userIds.size());
         
         int sentCount = 0;
         for (UUID userId : userIds) {
@@ -269,7 +308,7 @@ public class NotificationServiceImpl implements NotificationService {
                 sendNotification(userId, title, message, type, priority, data, null);
                 sentCount++;
             } catch (Exception e) {
-                logger.warning("Failed to send notification to user " + userId + ": " + e.getMessage());
+                LOG.warnf("Failed to send notification to user %s: %s", userId, e.getMessage());
             }
         }
         
@@ -282,19 +321,20 @@ public class NotificationServiceImpl implements NotificationService {
             UUID userId, String title, String message, String type, String priority,
             Map<String, Object> data, String actionUrl, UUID bookingId, UUID routeId) {
         
-        String query = "SELECT create_notification(:userId, :title, :message, :type, " +
-                      ":data::jsonb, :priority, :actionUrl, :bookingId, :routeId)";
+        String query = "INSERT INTO notifications " +
+                      "(user_id, title, message, type, priority, action_type, metadata, created_at) " +
+                      "VALUES (:userId, :title, :message, :type, :priority, :actionUrl, " +
+                      "CAST(:data AS jsonb), CURRENT_TIMESTAMP) " +
+                      "RETURNING id";
         
         UUID notificationId = (UUID) entityManager.createNativeQuery(query)
             .setParameter("userId", userId)
             .setParameter("title", title)
             .setParameter("message", message)
             .setParameter("type", type)
-            .setParameter("data", data != null ? convertToJson(data) : null)
             .setParameter("priority", priority != null ? priority : "NORMAL")
             .setParameter("actionUrl", actionUrl)
-            .setParameter("bookingId", bookingId)
-            .setParameter("routeId", routeId)
+            .setParameter("data", data != null ? convertToJson(data) : "{}")
             .getSingleResult();
         
         return notificationId;
@@ -312,21 +352,34 @@ public class NotificationServiceImpl implements NotificationService {
                 termiiService.sendSms(phoneNumber, message, "NOTIFICATION");
             }
         } catch (Exception e) {
-            logger.warning("Failed to send SMS notification: " + e.getMessage());
+            LOG.warnf("Failed to send SMS notification: %s", e.getMessage());
         }
     }
     
     private NotificationResponse mapToNotificationResponse(Object[] row) {
         NotificationResponse response = new NotificationResponse();
+        
+        // Indices: id(0), user_id(1), title(2), message(3), type(4), priority(5),
+        //          is_read(6), read_at(7), action_type(8), booking_id(9), 
+        //          transaction_id(10), created_at(11)
+        
         response.setId((UUID) row[0]);
         response.setTitle((String) row[2]);
         response.setMessage((String) row[3]);
         response.setType((String) row[4]);
-        response.setPriority((String) row[6]);
-        response.setIsRead((Boolean) row[7]);
-        response.setReadAt((LocalDateTime) row[8]);
-        response.setActionUrl((String) row[9]);
-        response.setCreatedAt((LocalDateTime) row[13]);
+        response.setPriority((String) row[5]);
+        response.setIsRead((Boolean) row[6]);
+        response.setReadAt((LocalDateTime) row[7]);
+        response.setActionUrl((String) row[8]);
+        
+        if (row[9] != null) {
+            response.setBookingId((UUID) row[9]);
+        }
+        if (row[10] != null) {
+            response.setTransactionId((UUID) row[10]);
+        }
+        
+        response.setCreatedAt((LocalDateTime) row[11]);
         
         return response;
     }
