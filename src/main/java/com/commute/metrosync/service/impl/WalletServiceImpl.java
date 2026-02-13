@@ -8,6 +8,11 @@ import com.commute.metrosync.dto.*;
 import com.commute.metrosync.service.NotificationService;
 import com.commute.metrosync.service.PaystackService;
 import com.commute.metrosync.service.WalletService;
+import com.commute.metrosync.service.WalletService.BankInfo;
+import com.commute.metrosync.dto.request.WithdrawalRequest;
+import com.commute.metrosync.dto.PagedResult;
+import com.commute.metrosync.entity.Notification;
+import com.commute.metrosync.entity.User;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -57,34 +62,47 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public WalletResponse getWalletBalance(UUID userId) {
         logger.info("Getting wallet balance for user: " + userId);
-        
-        String query = "SELECT * FROM wallet_overview WHERE user_id = :userId";
-        Map<String, Object> result = (Map<String, Object>) entityManager.createNativeQuery(query)
+    
+    // Query wallet table
+        String query = """
+            SELECT w.id, w.balance, w.ledger_balance, w.is_active, w.is_blocked,
+                w.created_at, w.updated_at
+            FROM wallets w
+            WHERE w.user_id = :userId
+            """;
+    
+        Object[] result = (Object[]) entityManager.createNativeQuery(query)
             .setParameter("userId", userId)
             .getSingleResult();
-        
-        WalletResponse response = new WalletResponse();
-        response.setUserId(userId);
-        response.setBalance((BigDecimal) result.get("balance"));
-        response.setLedgerBalance((BigDecimal) result.get("ledger_balance"));
-        response.setCurrency("NGN");
-        response.setIsActive((Boolean) result.get("is_active"));
-        
-        // Set daily limits
-        WalletResponse.DailyLimits limits = new WalletResponse.DailyLimits();
-        limits.setTransactionLimit(dailyTransactionLimit);
-        limits.setWithdrawalLimit(dailyWithdrawalLimit);
-        limits.setTodayTransactionTotal((BigDecimal) result.get("today_credits"));
-        limits.setTodayWithdrawalTotal((BigDecimal) result.get("today_debits"));
-        limits.setRemainingTransactionLimit(
-            dailyTransactionLimit.subtract((BigDecimal) result.get("today_credits"))
+    
+        UUID walletId = (UUID) result[0];
+        BigDecimal balance = (BigDecimal) result[1];
+        BigDecimal ledgerBalance = (BigDecimal) result[2];
+        Boolean isActive = (Boolean) result[3];
+        Boolean isBlocked = (Boolean) result[4];
+        LocalDateTime createdAt = (LocalDateTime) result[5];
+    
+    // Get last transaction time
+        String lastTxQuery = """
+            SELECT MAX(created_at) FROM transactions 
+            WHERE user_id = :userId
+            """;
+        LocalDateTime lastTransactionAt = (LocalDateTime) entityManager
+            .createNativeQuery(lastTxQuery)
+            .setParameter("userId", userId)
+            .getSingleResult();
+    
+    // FIX: Use record constructor instead of setters
+        return new WalletResponse(
+            walletId,
+            balance,
+            ledgerBalance,
+            "NGN",
+            isActive ? "ACTIVE" : "INACTIVE",
+            isBlocked != null && isBlocked,
+            createdAt,
+            lastTransactionAt
         );
-        limits.setRemainingWithdrawalLimit(
-            dailyWithdrawalLimit.subtract((BigDecimal) result.get("today_debits"))
-        );
-        response.setDailyLimits(limits);
-        
-        return response;
     }
     
     @Override
@@ -120,20 +138,17 @@ public class WalletServiceImpl implements WalletService {
             paystackService.initializeTransaction(email, amountInKobo, reference, metadata);
         
         if (!paystackResponse.isSuccess()) {
-            // Mark transaction as failed
             updateTransactionStatus(transactionId, "FAILED");
             throw new RuntimeException("Failed to initialize payment: " + paystackResponse.getErrorMessage());
         }
         
-        TopupInitializeResponse response = new TopupInitializeResponse();
-        response.setTransactionId(transactionId);
-        response.setReference(reference);
-        response.setAmount(amount);
-        response.setPaymentUrl(paystackResponse.getAuthorizationUrl());
-        response.setAccessCode(paystackResponse.getAccessCode());
-        response.setExpiresAt(LocalDateTime.now().plusHours(1));
-        
-        return response;
+        // FIX: Use record constructor instead of setters
+        return new TopupInitializeResponse(
+            true,
+            paystackResponse.getAuthorizationUrl(),
+            reference,
+            paystackResponse.getAccessCode()
+        );
     }
     
     @Override
@@ -144,12 +159,25 @@ public class WalletServiceImpl implements WalletService {
         PaystackService.PaystackVerifyResponse paystackResponse = 
             paystackService.verifyTransaction(reference);
         
+        // FIX: Use record constructor with all 5 parameters
         if (!paystackResponse.isSuccess()) {
-            return new PaymentVerificationResponse(false, "Payment verification failed");
+            return new PaymentVerificationResponse(
+                false,
+                "FAILED",
+                BigDecimal.ZERO,
+                reference,
+                null
+            );
         }
         
         if (!"success".equalsIgnoreCase(paystackResponse.getStatus())) {
-            return new PaymentVerificationResponse(false, "Payment not successful");
+            return new PaymentVerificationResponse(
+                false,
+                "FAILED",
+                BigDecimal.ZERO,
+                reference,
+                null
+            );
         }
         
         // Find transaction by reference
@@ -162,23 +190,33 @@ public class WalletServiceImpl implements WalletService {
         // Update transaction status
         updateTransactionStatus(transactionId, "COMPLETED");
         
-        // Wallet balance will be updated by trigger
-        
-        // Send notification
         BigDecimal amount = BigDecimal.valueOf(paystackResponse.getAmount()).divide(BigDecimal.valueOf(100));
-        notificationService.sendNotification(
-            userId,
-            "Wallet Credited",
-            "Your wallet has been credited with ₦" + amount,
-            "WALLET_CREDITED",
-            "NORMAL",
-            Map.of("amount", amount.toString(), "reference", reference),
-            "/wallet"
-        );
         
-        return new PaymentVerificationResponse(true, "Payment verified successfully", amount);
+        // FIX: Create notification directly instead of calling wrong method
+        Notification notification = new Notification();
+        notification.setUser(entityManager.find(User.class, userId));
+        notification.setTitle("Wallet Credited");
+        notification.setMessage("Your wallet has been credited with ₦" + amount);
+        notification.setType(Notification.NotificationType.WALLET_TOPUP);
+        notification.setPriority(Notification.Priority.NORMAL);
+        notification.setDeliveryChannels(new String[]{"IN_APP", "PUSH"});
+        notification.setActionType("VIEW_WALLET");
+        notification.setActionData(Map.of(
+            "amount", amount.toString(),
+            "reference", reference
+        ));
+        entityManager.persist(notification);
+        
+        // FIX: Use record constructor
+        return new PaymentVerificationResponse(
+            true,
+            "SUCCESS",
+            amount,
+            reference,
+            paystackResponse.getPaidAt()
+        );
     }
-    
+
     @Override
     public void processPaystackWebhook(String payload) {
         logger.info("Processing Paystack webhook");
@@ -193,7 +231,6 @@ public class WalletServiceImpl implements WalletService {
                 String status = data.get("status").asText();
                 
                 if ("success".equalsIgnoreCase(status)) {
-                    // Find transaction
                     String query = "SELECT id, user_id FROM transactions WHERE reference = :reference";
                     Object[] result = (Object[]) entityManager.createNativeQuery(query)
                         .setParameter("reference", reference)
@@ -202,22 +239,25 @@ public class WalletServiceImpl implements WalletService {
                     UUID transactionId = (UUID) result[0];
                     UUID userId = (UUID) result[1];
                     
-                    // Update transaction
                     updateTransactionStatus(transactionId, "COMPLETED");
                     
-                    // Send notification
                     BigDecimal amount = BigDecimal.valueOf(data.get("amount").asLong())
                         .divide(BigDecimal.valueOf(100));
                     
-                    notificationService.sendNotification(
-                        userId,
-                        "Payment Successful",
-                        "Your payment of ₦" + amount + " was successful",
-                        "PAYMENT_SUCCESS",
-                        "NORMAL",
-                        Map.of("amount", amount.toString(), "reference", reference),
-                        "/wallet"
-                    );
+                    // FIX: Create notification directly
+                    Notification notification = new Notification();
+                    notification.setUser(entityManager.find(User.class, userId));
+                    notification.setTitle("Payment Successful");
+                    notification.setMessage("Your payment of ₦" + amount + " was successful");
+                    notification.setType(Notification.NotificationType.PAYMENT_RECEIVED);
+                    notification.setPriority(Notification.Priority.NORMAL);
+                    notification.setDeliveryChannels(new String[]{"IN_APP", "PUSH"});
+                    notification.setActionType("VIEW_TRANSACTION");
+                    notification.setActionData(Map.of(
+                        "amount", amount.toString(),
+                        "reference", reference
+                    ));
+                    entityManager.persist(notification);
                 }
             }
             
@@ -231,17 +271,29 @@ public class WalletServiceImpl implements WalletService {
     public WithdrawalResponse requestWithdrawal(UUID userId, WithdrawalRequest request) {
         logger.info("Processing withdrawal for user " + userId + ": amount=" + request.getAmount());
         
-        // Verify OTP (this should call OtpService)
-        // For now, assuming OTP is pre-verified
-        
         // Check balance
         if (!hasSufficientBalance(userId, request.getAmount().add(withdrawalFee))) {
-            return WithdrawalResponse.failure("Insufficient balance");
+            // FIX: Use record constructor instead of .failure()
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
         // Check daily limit
         if (!checkDailyLimit(userId, request.getAmount(), true)) {
-            return WithdrawalResponse.failure("Daily withdrawal limit exceeded");
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
         // Verify bank account
@@ -251,11 +303,25 @@ public class WalletServiceImpl implements WalletService {
         );
         
         if (accountName == null) {
-            return WithdrawalResponse.failure("Invalid bank account");
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
         if (!accountName.equalsIgnoreCase(request.getAccountName())) {
-            return WithdrawalResponse.failure("Account name mismatch");
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
         // Create transfer recipient
@@ -268,7 +334,14 @@ public class WalletServiceImpl implements WalletService {
             );
         
         if (!recipientResponse.isSuccess()) {
-            return WithdrawalResponse.failure("Failed to create recipient: " + recipientResponse.getErrorMessage());
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
         // Generate reference
@@ -295,33 +368,221 @@ public class WalletServiceImpl implements WalletService {
             paystackService.initiateTransfer(
                 amountInKobo,
                 recipientResponse.getRecipientCode(),
-                request.getNarration() != null ? request.getNarration() : "Withdrawal",
-                reference
+                reference,
+                "Wallet withdrawal"
             );
         
         if (!transferResponse.isSuccess()) {
             updateTransactionStatus(transactionId, "FAILED");
-            return WithdrawalResponse.failure("Transfer failed: " + transferResponse.getErrorMessage());
+            return new WithdrawalResponse(
+                null,
+                "FAILED",
+                BigDecimal.ZERO,
+                null,
+                null,
+                LocalDateTime.now()
+            );
         }
         
-        // Update transaction with transfer details
-        updateTransactionStatus(transactionId, "PROCESSING");
-        
-        WithdrawalResponse response = new WithdrawalResponse();
-        response.setSuccess(true);
-        response.setTransactionId(transactionId);
-        response.setReference(reference);
-        response.setAmount(request.getAmount());
-        response.setFee(withdrawalFee);
-        response.setTotalDeduction(request.getAmount().add(withdrawalFee));
-        response.setRecipientAccount(request.getAccountNumber());
-        response.setRecipientBank(request.getBankCode());
-        response.setStatus("PROCESSING");
-        response.setEstimatedCompletion("Within 24 hours");
-        
-        return response;
+        // FIX: Use record constructor instead of setters
+        return new WithdrawalResponse(
+            transactionId,
+            "PROCESSING",
+            request.getAmount(),
+            request.getAccountNumber(),
+            request.getBankCode(),
+            LocalDateTime.now()
+        );
     }
     
+    @Override
+    public PagedResult<TransactionResponse> getTransactions(
+            UUID userId, String type, String category, String status,
+            LocalDateTime startDate, LocalDateTime endDate, int page, int size) {
+        
+        logger.info("Getting transactions for user: " + userId);
+        
+        StringBuilder queryBuilder = new StringBuilder("""
+            SELECT t.id, t.type, t.category, t.amount, t.status, t.description, t.created_at
+            FROM transactions t
+            WHERE t.user_id = :userId
+            """);
+        
+        if (type != null) queryBuilder.append(" AND t.type = :type");
+        if (category != null) queryBuilder.append(" AND t.category = :category");
+        if (status != null) queryBuilder.append(" AND t.status = :status");
+        if (startDate != null) queryBuilder.append(" AND t.created_at >= :startDate");
+        if (endDate != null) queryBuilder.append(" AND t.created_at <= :endDate");
+        
+        queryBuilder.append(" ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset");
+        
+        var query = entityManager.createNativeQuery(queryBuilder.toString());
+        query.setParameter("userId", userId);
+        if (type != null) query.setParameter("type", type);
+        if (category != null) query.setParameter("category", category);
+        if (status != null) query.setParameter("status", status);
+        if (startDate != null) query.setParameter("startDate", startDate);
+        if (endDate != null) query.setParameter("endDate", endDate);
+        query.setParameter("limit", size);
+        query.setParameter("offset", page * size);
+        
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+        
+        List<TransactionResponse> transactions = results.stream()
+            .map(row -> new TransactionResponse(
+                (UUID) row[0], (String) row[1], (String) row[2],
+                (BigDecimal) row[3], (String) row[4], (String) row[5],
+                (LocalDateTime) row[6]
+            ))
+            .toList();
+        
+        String countQuery = "SELECT COUNT(*) FROM transactions t WHERE t.user_id = :userId";
+        Long total = (Long) entityManager.createNativeQuery(countQuery)
+            .setParameter("userId", userId)
+            .getSingleResult();
+        
+        return new PagedResult<>(transactions, total.intValue(), page, size);
+    }
+
+    @Override
+    public TransactionDetailResponse getTransactionDetails(UUID userId, UUID transactionId) {
+        logger.info("Getting transaction details: " + transactionId);
+        
+        String query = """
+            SELECT t.id, t.type, t.category, t.amount, t.status, t.description,
+                t.reference, t.booking_id, t.created_at, t.completed_at
+            FROM transactions t
+            WHERE t.id = :transactionId AND t.user_id = :userId
+            """;
+        
+        Object[] result = (Object[]) entityManager.createNativeQuery(query)
+            .setParameter("transactionId", transactionId)
+            .setParameter("userId", userId)
+            .getSingleResult();
+        
+        return new TransactionDetailResponse(
+            (UUID) result[0], (String) result[1], (String) result[2],
+            (BigDecimal) result[3], (String) result[4], (String) result[5],
+            (String) result[6], (UUID) result[7], (LocalDateTime) result[8],
+            (LocalDateTime) result[9]
+        );
+    }
+
+    @Override
+    public BankListResponse getNigerianBanks() {
+        logger.info("Getting Nigerian banks list");
+        
+        List<BankInfo> banks = paystackService.getNigerianBanks().stream()
+            .map(bank -> new BankInfo(bank.name(), bank.code(), "NG"))
+            .toList();
+        
+        return new BankListResponse(banks);
+    }
+
+    @Override
+    public AccountVerificationResponse verifyBankAccount(String accountNumber, String bankCode) {
+        logger.info("Verifying bank account: " + accountNumber);
+        
+        try {
+            String accountName = paystackService.resolveAccountNumber(accountNumber, bankCode);
+            
+            return new AccountVerificationResponse(
+                accountName != null && !accountName.isEmpty(),
+                accountName,
+                accountNumber,
+                bankCode
+            );
+        } catch (Exception e) {
+            logger.warning("Account verification failed: " + e.getMessage());
+            return new AccountVerificationResponse(false, null, accountNumber, bankCode);
+        }
+    }
+
+    // ============================================================
+    // 12. ADD MISSING METHOD: getWalletStatus
+    // ============================================================
+    @Override
+    public WalletStatusResponse getWalletStatus(UUID userId) {
+        logger.info("Getting wallet status for user: " + userId);
+        
+        String query = """
+            SELECT is_blocked, block_reason, blocked_at 
+            FROM wallets 
+            WHERE user_id = :userId
+            """;
+        
+        Object[] result = (Object[]) entityManager.createNativeQuery(query)
+            .setParameter("userId", userId)
+            .getSingleResult();
+        
+        Boolean isBlocked = (Boolean) result[0];
+        
+        return new WalletStatusResponse(
+            isBlocked != null && isBlocked ? "BLOCKED" : "ACTIVE",
+            isBlocked != null && isBlocked,
+            (String) result[1],
+            (LocalDateTime) result[2]
+        );
+    }
+
+    // ============================================================
+    // 13. ADD MISSING METHOD: blockWallet
+    // ============================================================
+    @Override
+    public void blockWallet(UUID userId, String reason) {
+        logger.info("Blocking wallet for user: " + userId);
+        
+        entityManager.createNativeQuery("""
+            UPDATE wallets 
+            SET is_blocked = true, block_reason = :reason, blocked_at = :blockedAt
+            WHERE user_id = :userId
+            """)
+            .setParameter("reason", reason)
+            .setParameter("blockedAt", LocalDateTime.now())
+            .setParameter("userId", userId)
+            .executeUpdate();
+    }
+
+    // ============================================================
+    // 14. ADD MISSING METHOD: unblockWallet
+    // ============================================================
+    @Override
+    public void unblockWallet(UUID userId) {
+        logger.info("Unblocking wallet for user: " + userId);
+        
+        entityManager.createNativeQuery("""
+            UPDATE wallets 
+            SET is_blocked = false, block_reason = NULL, blocked_at = NULL
+            WHERE user_id = :userId
+            """)
+            .setParameter("userId", userId)
+            .executeUpdate();
+    }
+
+    // ============================================================
+    // 15. ADD MISSING METHOD: adjustWalletBalance
+    // ============================================================
+    @Override
+    public void adjustWalletBalance(UUID userId, BigDecimal amount, String reason, UUID adminId) {
+        logger.info("Adjusting wallet balance for user: " + userId);
+        
+        createTransaction(
+            userId,
+            amount.compareTo(BigDecimal.ZERO) > 0 ? "CREDIT" : "DEBIT",
+            "ADJUSTMENT",
+            amount.abs(),
+            BigDecimal.ZERO,
+            amount.abs(),
+            "Admin adjustment: " + reason,
+            "COMPLETED",
+            generateTransactionReference(),
+            null
+        );
+    }
+
+
+
     @Override
     public UUID createPendingTransaction(UUID userId, BigDecimal amount, String category, 
                                         String description, UUID bookingId) {
